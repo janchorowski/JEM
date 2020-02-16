@@ -50,7 +50,7 @@ parser.add_argument("--norm", type=str, default=None, choices=[None, "norm", "ba
 parser.add_argument("--n_steps", type=int, default=100)
 parser.add_argument("--width", type=int, default=10)
 parser.add_argument("--depth", type=int, default=28)
-# 
+#
 parser.add_argument('--n_steps_refine', type=int, default=0)
 parser.add_argument('--n_classes',type=int,default=10)
 parser.add_argument('--init_batch_size', type=int, default=128)
@@ -76,6 +76,7 @@ parser.add_argument("--base_dir", type=str, default='./adv_results')
 parser.add_argument('--exp_name', type=str, default='exp', help='saves everything in ?r/exp_name/')
 args = parser.parse_args()
 device = torch.device('cuda')
+# device = 'cpu'
 args_ = vars(args)
 for key in args_.keys():
     print('{}:   {}'.format(key,args_[key]))
@@ -246,22 +247,53 @@ for i, (img, label) in enumerate(data_loader):
     top = top.data.cpu().numpy()
     pred = top[:,0]
     for k in range(len(label)):
-      im = img[k,:,:,:]
+      print(len(label))
+      print(label)
+      print(top)
+      print(pred)
+      im = img[k,:,:,:] # take the kth image from the batch of images
       orig_label = label[k].data.cpu().numpy()
-      if pred[k] != orig_label:
+
+      im = np.expand_dims(im, axis=0)
+      orig_label = np.array([orig_label])
+
+      if pred[k] != orig_label: # only attack things model classifies correctly
         continue
       best_adv = None
-      for ii in range(20):
-          try:
-            adversarial = attack(im, label=orig_label, unpack=False, random_start=True, iterations=args.n_steps_pgd_attack) 
-            if ii == 0 or best_adv.distance > adversarial.distance:
-                best_adv = adversarial
-          except:
-            continue
-      try:
-          adversaries.append((im, orig_label, adversarial.image, adversarial.adversarial_class))
-      except:
-          continue
+      for ii in range(3):
+      # for ii in range(20):
+          # try:
+          print("ii="+str(ii))
+          # print(im.shape)
+          # print(img.shape)
+          # print(label)
+          # print(orig_label)
+          # print(len(im))
+          # print(len(orig_label))
+          # adversarial = attack(img, labels=label.detach().numpy(), unpack=False,
+          #                      random_start=True,
+          #                      iterations=args.n_steps_pgd_attack)
+          adversarials = attack(im, labels=orig_label, unpack=False,
+                               random_start=True,
+                               iterations=args.n_steps_pgd_attack)
+          # in this case adversarials is a list of size 1.
+          adversarial = adversarials[0]
+          print(adversarial.distance)
+          print(best_adv)
+          # adversarial = attack(im, label=orig_label, unpack=False, random_start=True, iterations=args.n_steps_pgd_attack)
+          if ii == 0 or best_adv.distance > adversarial.distance:
+            best_adv = adversarial
+          # except:
+          #   continue
+      # try:
+      # print("here")
+      # print(adversarial.perturbed)
+      # print(adversarial.adversarial_class)
+      adversaries.append((im, orig_label, adversarial.perturbed, adversarial.adversarial_class))
+      # print("here2")
+      # print(adversaries)
+      # except:
+      #     continue
     adv_save_dir = os.path.join(base_dir, args.exp_name)
     save_file = 'adversarials_batch_'+str(i)
     if not os.path.exists(os.path.join(adv_save_dir,save_file)):
