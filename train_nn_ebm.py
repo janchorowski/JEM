@@ -141,6 +141,7 @@ def get_model_and_buffer(args, device, sample_q):
     model_cls = F if args.uncond else CCF
     if args.dataset == "mnist":
         use_nn=True
+        # use_nn=False # testing only
     else:
         use_nn=False
     f = model_cls(args.depth, args.width, args.norm, dropout_rate=args.dropout_rate, n_classes=args.n_classes, im_sz=args.im_sz, use_nn=use_nn)
@@ -168,6 +169,14 @@ def get_data(args):
              tr.Normalize((.5, .5, .5), (.5, .5, .5)),
              lambda x: x + args.sigma * t.randn_like(x)]
         )
+    elif args.dataset == "mnist":
+        transform_train = tr.Compose(
+            [tr.Pad(4, padding_mode="reflect"),
+             tr.RandomCrop(args.im_sz),
+             tr.ToTensor(),
+             tr.Normalize((0.5,), (0.5,)),
+             lambda x: x + args.sigma * t.randn_like(x)]
+        )
     else:
         transform_train = tr.Compose(
             [tr.Pad(4, padding_mode="reflect"),
@@ -177,18 +186,26 @@ def get_data(args):
              tr.Normalize((.5, .5, .5), (.5, .5, .5)),
              lambda x: x + args.sigma * t.randn_like(x)]
         )
-    transform_test = tr.Compose(
-        [tr.ToTensor(),
-         tr.Normalize((.5, .5, .5), (.5, .5, .5)),
-         lambda x: x + args.sigma * t.randn_like(x)]
-    )
+    if args.dataset == "mnist":
+        transform_test = tr.Compose(
+            [tr.ToTensor(),
+             tr.Normalize((.5,), (.5,)),
+             lambda x: x + args.sigma * t.randn_like(x)]
+        )
+
+    else:
+        transform_test = tr.Compose(
+            [tr.ToTensor(),
+             tr.Normalize((.5, .5, .5), (.5, .5, .5)),
+             lambda x: x + args.sigma * t.randn_like(x)]
+        )
     def dataset_fn(train, transform):
         if args.dataset == "cifar10":
             return tv.datasets.CIFAR10(root=args.data_root, transform=transform, download=True, train=train)
         elif args.dataset == "cifar100":
             return tv.datasets.CIFAR100(root=args.data_root, transform=transform, download=True, train=train)
         elif args.dataset == "mnist":
-            return tv.datasets.MNIST(root=args.data_root, transform=tv.transforms.ToTensor(), download=True, train=train)
+            return tv.datasets.MNIST(root=args.data_root, transform=transform, download=True, train=train)
         else:
             return tv.datasets.SVHN(root=args.data_root, transform=transform, download=True,
                                     split="train" if train else "test")
@@ -210,6 +227,7 @@ def get_data(args):
     train_inds = np.array(train_inds)
     train_labeled_inds = []
     other_inds = []
+
     train_labels = np.array([full_train[ind][1] for ind in train_inds])
     if args.labels_per_class > 0:
         for i in range(args.n_classes):
