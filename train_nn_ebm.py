@@ -31,6 +31,8 @@ t.backends.cudnn.enabled = True
 seed = 1
 # im_sz = 32
 # n_ch = 3
+from sklearn import datasets
+import matplotlib.pyplot as plt
 
 
 
@@ -64,7 +66,8 @@ class NeuralNet(nn.Module):
         self.relu = nn.ReLU()
 
     def forward(self, x, y=None):
-        x = x.reshape(-1, x.shape[-1]**2)
+        if len(x.shape) > 2:
+            x = x.reshape(-1, x.shape[-1]**2)
         for layer in self.layers:
             x = layer(x)
             x = self.relu(x)
@@ -74,11 +77,17 @@ class NeuralNet(nn.Module):
 
 
 class F(nn.Module):
-    def __init__(self, depth=28, width=2, norm=None, dropout_rate=0.0, im_sz=32, use_nn=False, n_classes=10):
+    def __init__(self, depth=28, width=2, norm=None, dropout_rate=0.0, im_sz=32, use_nn=False, input_size=None, n_classes=10):
+        if input_size is not None:
+            assert use_nn == True #input size is for non-images, ie non-conv.
         super(F, self).__init__()
+
         if use_nn:
             hidden_units = 500
-            self.f = NeuralNet(im_sz**2, hidden_units, extra_layers=2)
+            if input_size is None:
+                self.f = NeuralNet(im_sz**2, hidden_units, extra_layers=2)
+            else:
+                self.f = NeuralNet(input_size, hidden_units, extra_layers=2)
             self.f.last_dim = hidden_units
         else:
             self.f = wideresnet.Wide_ResNet(depth, width, norm=norm, dropout_rate=dropout_rate)
@@ -96,8 +105,8 @@ class F(nn.Module):
 
 
 class CCF(F):
-    def __init__(self, depth=28, width=2, norm=None, dropout_rate=0.0, im_sz=32, use_nn=False, n_classes=10):
-        super(CCF, self).__init__(depth, width, norm=norm, dropout_rate=dropout_rate, n_classes=n_classes, im_sz=im_sz, use_nn=use_nn)
+    def __init__(self, depth=28, width=2, norm=None, dropout_rate=0.0, im_sz=32, use_nn=False, input_size=None, n_classes=10):
+        super(CCF, self).__init__(depth, width, norm=norm, dropout_rate=dropout_rate, n_classes=n_classes, im_sz=im_sz, input_size=input_size, use_nn=use_nn)
 
     def forward(self, x, y=None):
         logits = self.classify(x)
@@ -134,17 +143,23 @@ def grad_vals(m):
 
 
 def init_random(args, bs):
-    return t.FloatTensor(bs, args.n_ch, args.im_sz, args.im_sz).uniform_(-1, 1)
-
+    if args.dataset == "moons":
+        out = t.FloatTensor(bs, args.input_size).uniform_(-1,1)
+    else:
+        out = t.FloatTensor(bs, args.n_ch, args.im_sz, args.im_sz).uniform_(-1, 1)
+    return out
 
 def get_model_and_buffer(args, device, sample_q):
     model_cls = F if args.uncond else CCF
-    if args.dataset == "mnist":
+    args.input_size = None
+    if args.dataset == "mnist" or args.dataset == "moons":
         use_nn=True
         # use_nn=False # testing only
+        if args.dataset == "moons":
+            args.input_size = 2
     else:
         use_nn=False
-    f = model_cls(args.depth, args.width, args.norm, dropout_rate=args.dropout_rate, n_classes=args.n_classes, im_sz=args.im_sz, use_nn=use_nn)
+    f = model_cls(args.depth, args.width, args.norm, dropout_rate=args.dropout_rate, n_classes=args.n_classes, im_sz=args.im_sz, input_size=args.input_size, use_nn=use_nn)
     if not args.uncond:
         assert args.buffer_size % args.n_classes == 0, "Buffer size must be divisible by args.n_classes"
     if args.load_path is None:
@@ -177,6 +192,8 @@ def get_data(args):
              tr.Normalize((0.5,), (0.5,)),
              lambda x: x + args.sigma * t.randn_like(x)]
         )
+    elif args.dataset == "moons":
+        transform_train = None
     else:
         transform_train = tr.Compose(
             [tr.Pad(4, padding_mode="reflect"),
@@ -192,7 +209,8 @@ def get_data(args):
              tr.Normalize((.5,), (.5,)),
              lambda x: x + args.sigma * t.randn_like(x)]
         )
-
+    elif args.dataset == "moons":
+        transform_test = None
     else:
         transform_test = tr.Compose(
             [tr.ToTensor(),
@@ -206,6 +224,16 @@ def get_data(args):
             return tv.datasets.CIFAR100(root=args.data_root, transform=transform, download=True, train=train)
         elif args.dataset == "mnist":
             return tv.datasets.MNIST(root=args.data_root, transform=transform, download=True, train=train)
+        elif args.dataset == "moons":
+            data,labels = datasets.make_moons(n_samples=500, noise=.1)
+
+            # plt.scatter(data[:,0],data[:,1])
+            # plt.show()
+            data = t.Tensor(data)
+
+            labels = t.Tensor(labels)
+            labels = labels.long()
+            return t.utils.data.TensorDataset(data, labels)
         else:
             return tv.datasets.SVHN(root=args.data_root, transform=transform, download=True,
                                     split="train" if train else "test")
@@ -252,7 +280,7 @@ def get_data(args):
     dset_test = dataset_fn(False, transform_test)
     dload_valid = DataLoader(dset_valid, batch_size=100, shuffle=False, num_workers=4, drop_last=False)
     dload_test = DataLoader(dset_test, batch_size=100, shuffle=False, num_workers=4, drop_last=False)
-    return dload_train, dload_train_labeled, dload_valid,dload_test
+    return dload_train, dload_train_labeled, dload_valid,dload_test, dset_train, dset_train_labeled
 
 
 def get_sample_q(args, device):
@@ -267,7 +295,10 @@ def get_sample_q(args, device):
             assert not args.uncond, "Can't drawn conditional samples without giving me y"
         buffer_samples = replay_buffer[inds]
         random_samples = init_random(args, bs)
-        choose_random = (t.rand(bs) < args.reinit_freq).float()[:, None, None, None]
+        if args.dataset == "moons":
+            choose_random = (t.rand(bs) < args.reinit_freq).float()[:, None]
+        else:
+            choose_random = (t.rand(bs) < args.reinit_freq).float()[:, None, None, None]
         samples = choose_random * random_samples + (1 - choose_random) * buffer_samples
         return samples.to(device), inds
 
@@ -281,8 +312,6 @@ def get_sample_q(args, device):
         # generate initial samples and buffer inds of those samples (if buffer is used)
         init_sample, buffer_inds = sample_p_0(replay_buffer, bs=bs, y=y)
         x_k = t.autograd.Variable(init_sample, requires_grad=True)
-
-        # print(x_k.shape)
         # sgld
         for k in range(n_steps):
             f_prime = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
@@ -334,12 +363,15 @@ def main(args):
     if args.dataset == "mnist":
         args.n_ch = 1
         args.im_sz = 28
+    elif args.dataset == "moons":
+        args.n_ch = None
+        args.im_sz = None
     else:
         args.n_ch = 3
         args.im_sz = 32
 
     # datasets
-    dload_train, dload_train_labeled, dload_valid, dload_test = get_data(args)
+    dload_train, dload_train_labeled, dload_valid, dload_test, dset_train, dset_train_labeled = get_data(args)
 
     device = t.device('cuda' if t.cuda.is_available() else 'cpu')
 
@@ -457,13 +489,49 @@ def main(args):
                 correct, loss = eval_classification(f, dload_test, device)
                 print("Epoch {}: Test Loss {}, Test Acc {}".format(epoch, loss, correct))
             f.train()
+
+            if args.dataset == "moons" and correct > best_valid_acc:
+                data,labels= datasets.make_moons(500, noise=0.1)
+                data = t.Tensor(data)
+                preds = f.classify(data.to(device))
+                preds = preds.argmax(dim=1)
+                # preds = preds.detach().numpy()
+                # print(preds)
+                preds = preds.cpu()
+                data1 = data[preds == 0]
+                # print(data1)
+                plt.scatter(data1[:,0], data1[:,1], c="orange")
+                data2 = data[preds == 1]
+                # print(data2)
+                plt.scatter(data2[:,0], data2[:,1], c="blue")
+
+                # labeled_pts = []
+                # data, labels = dload_train_labeled.__next__()
+                # labeled_pts = data
+                # for i in range(2-1):
+                #     # labeled_pts.append(data)
+                #     data,labels = dload_train_labeled.__next__()
+                #     labeled_pts = np.vstack((labeled_pts, data))
+                # print(labeled_pts)
+                labeled_pts = dset_train_labeled[:][0]
+                labeled_pts_labels = dset_train_labeled[:][1]
+                labeled0 = labeled_pts[labeled_pts_labels == 0]
+                labeled1 = labeled_pts[labeled_pts_labels == 1]
+                # Note labels right now not forced to be class balanced
+                print(sum(labeled_pts_labels))
+                plt.scatter(labeled0[:,0], labeled0[:,1], c="green")
+                plt.scatter(labeled1[:,0], labeled1[:,1], c="red")
+                plt.savefig("moons_vis.png")
+                # plt.show()
+
         checkpoint(f, replay_buffer, "last_ckpt.pt", args, device)
 
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Energy Based Models and Shit")
-    parser.add_argument("--dataset", type=str, default="cifar10", choices=["cifar10", "svhn", "mnist", "cifar100"])
+    #cifar
+    parser.add_argument("--dataset", type=str, default="cifar", choices=["cifar10", "svhn", "mnist", "cifar100", "moons"])
     parser.add_argument("--data_root", type=str, default="../data")
     # optimization
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -472,10 +540,14 @@ if __name__ == "__main__":
     parser.add_argument("--decay_rate", type=float, default=.3,
                         help="learning rate decay multiplier")
     parser.add_argument("--clf_only", action="store_true", help="If set, then only train the classifier")
+    #labels was -1?
     parser.add_argument("--labels_per_class", type=int, default=-1,
                         help="number of labeled examples per class, if zero then use all labels")
+    # parser.add_argument("--labels_per_class", type=int, default=10,
+    #                     help="number of labeled examples per class, if zero then use all labels")
     parser.add_argument("--optimizer", choices=["adam", "sgd"], default="adam")
     parser.add_argument("--batch_size", type=int, default=64)
+    # parser.add_argument("--batch_size", type=int, default=10)
     parser.add_argument("--n_epochs", type=int, default=200)
     parser.add_argument("--warmup_iters", type=int, default=-1,
                         help="number of iters to linearly increase learning rate, if -1 then no warmmup")
@@ -514,7 +586,15 @@ if __name__ == "__main__":
     parser.add_argument("--plot_cond", action="store_true", help="If set, save class-conditional samples")
     parser.add_argument("--plot_uncond", action="store_true", help="If set, save unconditional samples")
     parser.add_argument("--n_valid", type=int, default=5000)
+    # parser.add_argument("--n_valid", type=int, default=50)
+    parser.add_argument("--semi-supervised", type=bool, default=False)
+
 
     args = parser.parse_args()
-    args.n_classes = 100 if args.dataset == "cifar100" else 10
+    if args.dataset == "cifar100":
+        args.n_classes = 100
+    elif args.dataset == "moons":
+        args.n_classes = 2
+    else:
+        args.n_classes = 10
     main(args)
