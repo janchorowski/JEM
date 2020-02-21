@@ -457,17 +457,19 @@ def main(args):
 
             if args.vat:
 
-                if args.class_cond_p_x_sample:
-                    assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
-                    y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(
-                        device)
-                    x_q = sample_q(f, replay_buffer, y=y_q)
-                else:
-                    x_q = sample_q(f, replay_buffer)
+                # if args.class_cond_p_x_sample:
+                #     assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
+                #     y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(
+                #         device)
+                #     x_q = sample_q(f, replay_buffer, y=y_q)
+                # else:
+                #     x_q = sample_q(f, replay_buffer)
 
                 optim.zero_grad()
                 vat_loss = VATLoss(xi=10.0, eps=1.0, ip=1)
-                lds = vat_loss(f, x_q)
+                lds = vat_loss(f, x_p_d)
+                # lds = vat_loss(f, x_q)
+
                 # lds = vat_loss(f.classify, x_q)
 
                 logits = f.classify(x_lab)
