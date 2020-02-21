@@ -116,6 +116,53 @@ class CCF(F):
             return t.gather(logits, 1, y[:, None])
 
 
+def _l2_normalize(d):
+    d_reshaped = d.view(d.shape[0], -1, *(1 for _ in range(d.dim() - 2)))
+    d /= t.norm(d_reshaped, dim=1, keepdim=True) + 1e-8
+    return d
+
+class VATLoss(nn.Module):
+    # Source https://github.com/lyakaap/VAT-pytorch/blob/master/vat.py
+
+    def __init__(self, xi=10.0, eps=1.0, ip=1):
+        """VAT loss
+        :param xi: hyperparameter of VAT (default: 10.0)
+        :param eps: hyperparameter of VAT (default: 1.0)
+        :param ip: iteration times of computing adv noise (default: 1)
+        """
+        super(VATLoss, self).__init__()
+        self.xi = xi
+        self.eps = eps
+        self.ip = ip
+
+    def forward(self, model, x):
+        with t.no_grad():
+            pred = t.nn.functional.softmax(model.classify(x), dim=1)
+
+        # prepare random unit tensor
+        d = t.rand(x.shape).sub(0.5).to(x.device)
+        d = _l2_normalize(d)
+
+        # calc adversarial direction
+        for _ in range(self.ip):
+            d.requires_grad_()
+            pred_hat = model.classify(x + self.xi * d)
+            logp_hat = t.nn.functional.log_softmax(pred_hat, dim=1)
+            adv_distance = t.nn.functional.kl_div(logp_hat, pred, reduction='batchmean')
+            adv_distance.backward()
+            d = _l2_normalize(d.grad)
+            model.zero_grad()
+
+        # calc LDS
+        r_adv = d * self.eps
+        pred_hat = model.classify(x + r_adv)
+        logp_hat = t.nn.functional.log_softmax(pred_hat, dim=1)
+        lds = t.nn.functional.kl_div(logp_hat, pred, reduction='batchmean')
+
+        return lds
+
+
+
 def cycle(loader):
     while True:
         for data in loader:
@@ -225,7 +272,7 @@ def get_data(args):
         elif args.dataset == "mnist":
             return tv.datasets.MNIST(root=args.data_root, transform=transform, download=True, train=train)
         elif args.dataset == "moons":
-            data,labels = datasets.make_moons(n_samples=500, noise=.1)
+            data,labels = datasets.make_moons(n_samples=args.n_moons_data, noise=.1)
 
             # plt.scatter(data[:,0],data[:,1])
             # plt.show()
@@ -407,70 +454,107 @@ def main(args):
             x_lab, y_lab = x_lab.to(device), y_lab.to(device)
 
             L = 0.
-            if args.p_x_weight > 0:  # maximize log p(x)
+
+            if args.vat:
+
                 if args.class_cond_p_x_sample:
                     assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
-                    y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
+                    y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(
+                        device)
                     x_q = sample_q(f, replay_buffer, y=y_q)
                 else:
-                    x_q = sample_q(f, replay_buffer)  # sample from log-sumexp
+                    x_q = sample_q(f, replay_buffer)
 
-                fp_all = f(x_p_d)
-                fq_all = f(x_q)
-                fp = fp_all.mean()
-                fq = fq_all.mean()
+                optim.zero_grad()
+                vat_loss = VATLoss(xi=10.0, eps=1.0, ip=1)
+                lds = vat_loss(f, x_q)
+                # lds = vat_loss(f.classify, x_q)
 
-                l_p_x = -(fp - fq)
-                if cur_iter % args.print_every == 0:
-                    print('P(x) | {}:{:>d} f(x_p_d)={:>14.9f} f(x_q)={:>14.9f} d={:>14.9f}'.format(epoch, i, fp, fq,
-                                                                                                   fp - fq))
-                L += args.p_x_weight * l_p_x
-
-            if args.p_y_given_x_weight > 0:  # maximize log p(y | x)
                 logits = f.classify(x_lab)
-                l_p_y_given_x = nn.CrossEntropyLoss()(logits, y_lab)
+
+                loss = args.p_y_given_x_weight * nn.CrossEntropyLoss()(logits, y_lab) + args.vat_weight * lds
+
+                loss.backward()
+                optim.step()
+
+                cur_iter += 1
+
                 if cur_iter % args.print_every == 0:
                     acc = (logits.max(1)[1] == y_lab).float().mean()
-                    print('P(y|x) {}:{:>d} loss={:>14.9f}, acc={:>14.9f}'.format(epoch,
-                                                                                 cur_iter,
-                                                                                 l_p_y_given_x.item(),
-                                                                                 acc.item()))
-                L += args.p_y_given_x_weight * l_p_y_given_x
+                    print(
+                        'P(y|x) {}:{:>d} loss={:>14.9f}, acc={:>14.9f}'.format(
+                            epoch,
+                            cur_iter,
+                            loss.item(),
+                            acc.item()))
 
-            if args.p_x_y_weight > 0:  # maximize log p(x, y)
-                assert not args.uncond, "this objective can only be trained for class-conditional EBM DUUUUUUUUHHHH!!!"
-                x_q_lab = sample_q(f, replay_buffer, y=y_lab)
-                fp, fq = f(x_lab, y_lab).mean(), f(x_q_lab, y_lab).mean()
-                l_p_x_y = -(fp - fq)
-                if cur_iter % args.print_every == 0:
-                    print('P(x, y) | {}:{:>d} f(x_p_d)={:>14.9f} f(x_q)={:>14.9f} d={:>14.9f}'.format(epoch, i, fp, fq,
-                                                                                                      fp - fq))
+            else:
 
-                L += args.p_x_y_weight * l_p_x_y
-
-            # break if the loss diverged...easier for poppa to run experiments this way
-            if L.abs().item() > 1e8:
-                print("BAD BOIIIIIIIIII")
-                1/0
-
-            optim.zero_grad()
-            L.backward()
-            optim.step()
-            cur_iter += 1
-
-            if cur_iter % 100 == 0:
-                if args.plot_uncond:
+                if args.p_x_weight > 0:  # maximize log p(x)
                     if args.class_cond_p_x_sample:
                         assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
                         y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
                         x_q = sample_q(f, replay_buffer, y=y_q)
                     else:
-                        x_q = sample_q(f, replay_buffer)
-                    plot('{}/x_q_{}_{:>06d}.png'.format(args.save_dir, epoch, i), x_q)
-                if args.plot_cond:  # generate class-conditional samples
-                    y = t.arange(0, args.n_classes)[None].repeat(args.n_classes, 1).transpose(1, 0).contiguous().view(-1).to(device)
-                    x_q_y = sample_q(f, replay_buffer, y=y)
-                    plot('{}/x_q_y{}_{:>06d}.png'.format(args.save_dir, epoch, i), x_q_y)
+                        x_q = sample_q(f, replay_buffer)  # sample from log-sumexp
+
+                    fp_all = f(x_p_d)
+                    fq_all = f(x_q)
+                    fp = fp_all.mean()
+                    fq = fq_all.mean()
+
+                    l_p_x = -(fp - fq)
+                    if cur_iter % args.print_every == 0:
+                        print('P(x) | {}:{:>d} f(x_p_d)={:>14.9f} f(x_q)={:>14.9f} d={:>14.9f}'.format(epoch, i, fp, fq,
+                                                                                                       fp - fq))
+                    L += args.p_x_weight * l_p_x
+
+                if args.p_y_given_x_weight > 0:  # maximize log p(y | x)
+                    logits = f.classify(x_lab)
+                    l_p_y_given_x = nn.CrossEntropyLoss()(logits, y_lab)
+                    if cur_iter % args.print_every == 0:
+                        acc = (logits.max(1)[1] == y_lab).float().mean()
+                        print('P(y|x) {}:{:>d} loss={:>14.9f}, acc={:>14.9f}'.format(epoch,
+                                                                                     cur_iter,
+                                                                                     l_p_y_given_x.item(),
+                                                                                     acc.item()))
+                    L += args.p_y_given_x_weight * l_p_y_given_x
+
+                if args.p_x_y_weight > 0:  # maximize log p(x, y)
+                    assert not args.uncond, "this objective can only be trained for class-conditional EBM DUUUUUUUUHHHH!!!"
+                    x_q_lab = sample_q(f, replay_buffer, y=y_lab)
+                    fp, fq = f(x_lab, y_lab).mean(), f(x_q_lab, y_lab).mean()
+                    l_p_x_y = -(fp - fq)
+                    if cur_iter % args.print_every == 0:
+                        print('P(x, y) | {}:{:>d} f(x_p_d)={:>14.9f} f(x_q)={:>14.9f} d={:>14.9f}'.format(epoch, i, fp, fq,
+                                                                                                          fp - fq))
+
+                    L += args.p_x_y_weight * l_p_x_y
+
+                # break if the loss diverged...easier for poppa to run experiments this way
+                if L.abs().item() > 1e8:
+                    print("BAD BOIIIIIIIIII")
+                    1/0
+
+                optim.zero_grad()
+                L.backward()
+                optim.step()
+
+                cur_iter += 1
+
+                if cur_iter % 100 == 0:
+                    if args.plot_uncond:
+                        if args.class_cond_p_x_sample:
+                            assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
+                            y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
+                            x_q = sample_q(f, replay_buffer, y=y_q)
+                        else:
+                            x_q = sample_q(f, replay_buffer)
+                        plot('{}/x_q_{}_{:>06d}.png'.format(args.save_dir, epoch, i), x_q)
+                    if args.plot_cond:  # generate class-conditional samples
+                        y = t.arange(0, args.n_classes)[None].repeat(args.n_classes, 1).transpose(1, 0).contiguous().view(-1).to(device)
+                        x_q_y = sample_q(f, replay_buffer, y=y)
+                        plot('{}/x_q_y{}_{:>06d}.png'.format(args.save_dir, epoch, i), x_q_y)
 
         if epoch % args.ckpt_every == 0:
             checkpoint(f, replay_buffer, f'ckpt_{epoch}.pt', args, device)
@@ -490,8 +574,8 @@ def main(args):
                 print("Epoch {}: Test Loss {}, Test Acc {}".format(epoch, loss, correct))
             f.train()
 
-            if args.dataset == "moons" and correct > best_valid_acc:
-                data,labels= datasets.make_moons(500, noise=0.1)
+            if args.dataset == "moons" and correct >= best_valid_acc:
+                data,labels= datasets.make_moons(args.n_moons_data, noise=0.1)
                 data = t.Tensor(data)
                 preds = f.classify(data.to(device))
                 preds = preds.argmax(dim=1)
@@ -518,10 +602,11 @@ def main(args):
                 labeled0 = labeled_pts[labeled_pts_labels == 0]
                 labeled1 = labeled_pts[labeled_pts_labels == 1]
                 # Note labels right now not forced to be class balanced
-                print(sum(labeled_pts_labels))
+                # print(sum(labeled_pts_labels))
                 plt.scatter(labeled0[:,0], labeled0[:,1], c="green")
                 plt.scatter(labeled1[:,0], labeled1[:,1], c="red")
-                plt.savefig("moons_vis.png")
+                print("Saving figure")
+                plt.savefig("moonsvis.png")
                 # plt.show()
 
         checkpoint(f, replay_buffer, "last_ckpt.pt", args, device)
@@ -531,7 +616,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Energy Based Models and Shit")
     #cifar
-    parser.add_argument("--dataset", type=str, default="cifar", choices=["cifar10", "svhn", "mnist", "cifar100", "moons"])
+    parser.add_argument("--dataset", type=str, default="moons", choices=["cifar10", "svhn", "mnist", "cifar100", "moons"])
     parser.add_argument("--data_root", type=str, default="../data")
     # optimization
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -541,13 +626,13 @@ if __name__ == "__main__":
                         help="learning rate decay multiplier")
     parser.add_argument("--clf_only", action="store_true", help="If set, then only train the classifier")
     #labels was -1?
-    parser.add_argument("--labels_per_class", type=int, default=-1,
-                        help="number of labeled examples per class, if zero then use all labels")
-    # parser.add_argument("--labels_per_class", type=int, default=10,
+    # parser.add_argument("--labels_per_class", type=int, default=-1,
     #                     help="number of labeled examples per class, if zero then use all labels")
+    parser.add_argument("--labels_per_class", type=int, default=10,
+                        help="number of labeled examples per class, if zero then use all labels")
     parser.add_argument("--optimizer", choices=["adam", "sgd"], default="adam")
-    parser.add_argument("--batch_size", type=int, default=64)
-    # parser.add_argument("--batch_size", type=int, default=10)
+    # parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--batch_size", type=int, default=10)
     parser.add_argument("--n_epochs", type=int, default=200)
     parser.add_argument("--warmup_iters", type=int, default=-1,
                         help="number of iters to linearly increase learning rate, if -1 then no warmmup")
@@ -588,6 +673,11 @@ if __name__ == "__main__":
     parser.add_argument("--n_valid", type=int, default=5000)
     # parser.add_argument("--n_valid", type=int, default=50)
     parser.add_argument("--semi-supervised", type=bool, default=False)
+    # parser.add_argument("--vat", type=bool, default=False)
+    parser.add_argument("--vat", type=bool, default=False)
+    parser.add_argument("--vat_weight", type=float, default=1.0)
+    parser.add_argument("--n_moons_data", type=float, default=500)
+
 
 
     args = parser.parse_args()
@@ -597,4 +687,7 @@ if __name__ == "__main__":
         args.n_classes = 2
     else:
         args.n_classes = 10
+    if args.vat:
+        print("Running VAT")
+
     main(args)
