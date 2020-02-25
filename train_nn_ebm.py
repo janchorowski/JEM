@@ -497,8 +497,22 @@ def main(args):
                         assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
                         y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
                         x_q = sample_q(f, replay_buffer, y=y_q)
+                        if args.class_cond_label_prop:
+                            logits_pseudo = f.classify(x_q)
+                            l_p_y_given_pseudo_x = nn.CrossEntropyLoss()(logits_pseudo, y_q)
+                            L += args.p_y_given_x_weight * l_p_y_given_pseudo_x
+                            if cur_iter % args.print_every == 0:
+                                acc = (logits_pseudo.max(1)[1] == y_q).float().mean()
+                                print(
+                                    'Pseudo_P(y|x) {}:{:>d} loss={:>14.9f}, acc={:>14.9f}'.format(
+                                        epoch,
+                                        cur_iter,
+                                        l_p_y_given_pseudo_x.item(),
+                                        acc.item()))
                     else:
                         x_q = sample_q(f, replay_buffer)  # sample from log-sumexp
+
+                    # TODO the arg is alredy here, and the smapling is already done too. All I need to do is add the update based on cross entropy for new samples too (just extend the classifier batch?)
 
                     fp_all = f(x_p_d)
                     fq_all = f(x_q)
@@ -676,9 +690,11 @@ if __name__ == "__main__":
     # parser.add_argument("--n_valid", type=int, default=50)
     parser.add_argument("--semi-supervised", type=bool, default=False)
     # parser.add_argument("--vat", type=bool, default=False)
-    parser.add_argument("--vat", type=bool, default=False)
+    parser.add_argument("--vat", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--vat_weight", type=float, default=1.0)
     parser.add_argument("--n_moons_data", type=float, default=500)
+    parser.add_argument("--class_cond_label_prop", action="store_true", help="Train on generated class cond samples too")
+
 
 
 
