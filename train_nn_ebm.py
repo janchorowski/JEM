@@ -497,7 +497,7 @@ def main(args):
                         assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
                         y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
                         x_q = sample_q(f, replay_buffer, y=y_q)
-                        if args.class_cond_label_prop:
+                        if args.class_cond_label_prop and cur_iter > args.warmup_iters:
                             logits_pseudo = f.classify(x_q)
                             l_p_y_given_pseudo_x = nn.CrossEntropyLoss()(logits_pseudo, y_q)
                             L += args.p_y_given_x_weight * l_p_y_given_pseudo_x
