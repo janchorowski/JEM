@@ -500,7 +500,7 @@ def main(args):
                         if args.class_cond_label_prop and cur_iter > args.warmup_iters:
                             logits_pseudo = f.classify(x_q)
                             l_p_y_given_pseudo_x = nn.CrossEntropyLoss()(logits_pseudo, y_q)
-                            L += args.p_y_given_x_weight * l_p_y_given_pseudo_x
+                            L += args.label_prop_weight * l_p_y_given_pseudo_x
                             if cur_iter % args.print_every == 0:
                                 acc = (logits_pseudo.max(1)[1] == y_q).float().mean()
                                 print(
@@ -655,6 +655,7 @@ if __name__ == "__main__":
     # loss weighting
     parser.add_argument("--p_x_weight", type=float, default=1.)
     parser.add_argument("--p_y_given_x_weight", type=float, default=1.)
+    parser.add_argument("--label_prop_weight", type=float, default=1.)
     parser.add_argument("--p_x_y_weight", type=float, default=0.)
     # regularization
     parser.add_argument("--dropout_rate", type=float, default=0.0)
