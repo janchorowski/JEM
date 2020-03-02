@@ -222,6 +222,14 @@ def get_model_and_buffer(args, device, sample_q):
     return f, replay_buffer
 
 
+def logit_transform(x, lamb = 0.05):
+    # Adapted from https://github.com/yookoon/VLAE
+    x = (x * 255.0 + t.rand_like(x)) / 256.0 # noise
+    x = lamb + (1 - 2.0 * lamb) * x # clipping to avoid explosion at ends
+    x = t.log(x) - t.log(1.0 - x)
+    return x
+
+
 def get_data(args):
     if args.dataset == "svhn":
         transform_train = tr.Compose(
@@ -236,8 +244,10 @@ def get_data(args):
             [tr.Pad(4, padding_mode="reflect"),
              tr.RandomCrop(args.im_sz),
              tr.ToTensor(),
-             tr.Normalize((0.5,), (0.5,)),
-             lambda x: x + args.sigma * t.randn_like(x)]
+             # tr.Normalize((0.5,), (0.5,)),
+             # lambda x: x + args.sigma * t.randn_like(x)
+             logit_transform
+             ]
         )
     elif args.dataset == "moons":
         transform_train = None
@@ -253,8 +263,10 @@ def get_data(args):
     if args.dataset == "mnist":
         transform_test = tr.Compose(
             [tr.ToTensor(),
-             tr.Normalize((.5,), (.5,)),
-             lambda x: x + args.sigma * t.randn_like(x)]
+             # tr.Normalize((.5,), (.5,)),
+             # lambda x: x + args.sigma * t.randn_like(x)
+             logit_transform
+            ]
         )
     elif args.dataset == "moons":
         transform_test = None
@@ -493,6 +505,8 @@ def main(args):
             else:
 
                 if args.p_x_weight > 0:  # maximize log p(x)
+                    if args.class_cond_label_prop:
+                        assert args.class_cond_p_x_sample, "need class-conditional samples for psuedo label prop"
                     if args.class_cond_p_x_sample:
                         assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
                         y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
@@ -528,12 +542,42 @@ def main(args):
                 if args.p_y_given_x_weight > 0:  # maximize log p(y | x)
                     logits = f.classify(x_lab)
                     l_p_y_given_x = nn.CrossEntropyLoss()(logits, y_lab)
+
+
+
                     if cur_iter % args.print_every == 0:
                         acc = (logits.max(1)[1] == y_lab).float().mean()
                         print('P(y|x) {}:{:>d} loss={:>14.9f}, acc={:>14.9f}'.format(epoch,
                                                                                      cur_iter,
                                                                                      l_p_y_given_x.item(),
                                                                                      acc.item()))
+
+                        if args.svd_jacobian:
+                            # Let's just do 1 example for now
+                            input_ex_ind = 0
+                            x_example = x_lab[input_ex_ind]
+                            x_example.requires_grad = True
+                            j_list = []
+                            for i in range(args.n_classes):
+                                grad = t.autograd.grad(f.classify(x_example)[i],
+                                                       x_example)[0]
+                                grad = grad.reshape(-1)
+                                j_list.append(grad)
+                            jacobian = t.stack(j_list)
+                            u, s, v = t.svd(jacobian)
+                            # print(jacobian.shape)
+                            # print(u)
+                            # print(u.shape)
+                            print(s)
+                            # print(s.shape)
+                            # print(v)
+                            # print(v.shape)
+                            spectrum = s.detach().cpu().numpy()
+                            plt.figure()
+                            plt.scatter(np.arange(0, args.n_classes), spectrum)
+                            plt.savefig("spectrum_digit{}_epoch{}".format(y_lab[input_ex_ind], epoch))
+                            plt.clf()
+
                     L += args.p_y_given_x_weight * l_p_y_given_x
 
                 if args.p_x_y_weight > 0:  # maximize log p(x, y)
@@ -695,7 +739,7 @@ if __name__ == "__main__":
     parser.add_argument("--vat_weight", type=float, default=1.0)
     parser.add_argument("--n_moons_data", type=float, default=500)
     parser.add_argument("--class_cond_label_prop", action="store_true", help="Train on generated class cond samples too")
-
+    parser.add_argument("--svd_jacobian", action="store_true", help="Do SVD on Jacobian matrix at data points to help understand model behaviour")
 
 
 
