@@ -99,6 +99,10 @@ class F(nn.Module):
         penult_z = self.f(x)
         return self.energy_output(penult_z).squeeze()
 
+    def penult(self, x):
+        penult_z = self.f(x)
+        return penult_z
+
     def classify(self, x):
         penult_z = self.f(x)
         return self.class_output(penult_z).squeeze()
@@ -318,7 +322,6 @@ def get_data(args):
     train_labels = np.array([full_train[ind][1] for ind in train_inds])
     if args.labels_per_class > 0:
         for i in range(args.n_classes):
-            print(i)
             train_labeled_inds.extend(train_inds[train_labels == i][:args.labels_per_class])
             other_inds.extend(train_inds[train_labels == i][args.labels_per_class:])
     else:
@@ -407,6 +410,35 @@ def checkpoint(f, buffer, tag, args, device):
     t.save(ckpt_dict, os.path.join(args.save_dir, tag))
     f.to(device)
 
+def plot_jacobian_spectrum(x_samples, f, epoch, use_penult=False):
+    # Let's just do 1 example for now
+    # input_ex_ind = 0
+    # x_example = x_lab[input_ex_ind]
+    for c in range(args.n_classes):
+        x_example = x_samples[c]
+        x_example.requires_grad = True
+        j_list = []
+        f.eval()
+        # Vectorizable?
+        for i in range(args.n_classes):
+            if use_penult:
+                grad = t.autograd.grad(f.penult(x_example)[i],
+                                       x_example)[0]
+            else:
+                grad = t.autograd.grad(f.classify(x_example)[i],
+                                       x_example)[0]
+            grad = grad.reshape(-1)
+            j_list.append(grad)
+        f.train()
+        jacobian = t.stack(j_list)
+        u, s, v = t.svd(jacobian)
+        # print(s)
+        spectrum = s.detach().cpu().numpy()
+        plt.scatter(np.arange(0, args.n_classes), spectrum)
+        plt.savefig("spectrum_digit{}_epoch{}".format(c, epoch))
+        # plt.show()
+        plt.close()
+
 
 def main(args):
     utils.makedirs(args.save_dir)
@@ -449,12 +481,30 @@ def main(args):
 
     best_valid_acc = 0.0
     cur_iter = 0
+
+    if args.svd_jacobian:
+        # Collect static samples for consistent evaluation of SVD of Jacobian
+        # 1 static sample per class for now
+        # zero init at first
+        static_samples = init_random(args, args.n_classes).to(device) * 0
+        count = 0
+        for i, (x_lab, y_lab) in enumerate(dload_train_labeled):
+            for j in range(len(y_lab)):
+                if static_samples[y_lab[j]].sum() == 0:
+                    static_samples[y_lab[j]] = x_lab[j]
+                    count += 1
+            # Stop when we have all classes
+            if count == args.n_classes:
+                break
+
     for epoch in range(args.n_epochs):
         if epoch in args.decay_epochs:
             for param_group in optim.param_groups:
                 new_lr = param_group['lr'] * args.decay_rate
                 param_group['lr'] = new_lr
             print("Decaying lr to {}".format(new_lr))
+
+
         for i, (x_p_d, _) in tqdm(enumerate(dload_train)):
             if cur_iter <= args.warmup_iters:
                 lr = args.lr * cur_iter / float(args.warmup_iters)
@@ -553,30 +603,7 @@ def main(args):
                                                                                      acc.item()))
 
                         if args.svd_jacobian:
-                            # Let's just do 1 example for now
-                            input_ex_ind = 0
-                            x_example = x_lab[input_ex_ind]
-                            x_example.requires_grad = True
-                            j_list = []
-                            for i in range(args.n_classes):
-                                grad = t.autograd.grad(f.classify(x_example)[i],
-                                                       x_example)[0]
-                                grad = grad.reshape(-1)
-                                j_list.append(grad)
-                            jacobian = t.stack(j_list)
-                            u, s, v = t.svd(jacobian)
-                            # print(jacobian.shape)
-                            # print(u)
-                            # print(u.shape)
-                            print(s)
-                            # print(s.shape)
-                            # print(v)
-                            # print(v.shape)
-                            spectrum = s.detach().cpu().numpy()
-                            plt.figure()
-                            plt.scatter(np.arange(0, args.n_classes), spectrum)
-                            plt.savefig("spectrum_digit{}_epoch{}".format(y_lab[input_ex_ind], epoch))
-                            plt.clf()
+                            plot_jacobian_spectrum(static_samples, f, epoch)
 
                     L += args.p_y_given_x_weight * l_p_y_given_x
 
