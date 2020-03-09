@@ -419,10 +419,14 @@ def plot_jacobian_spectrum(x_samples, f, epoch, use_penult=False):
         x_example.requires_grad = True
         j_list = []
         f.eval()
-        # Vectorizable?
-        for i in range(args.n_classes):
+        # Is the below Jacobian calculation vectorizable?
+        dim = args.n_classes
+        if use_penult:
+            dim = f.penult(x_example).squeeze().shape[0]
+            penult_plot_num = 20
+        for i in range(dim):
             if use_penult:
-                grad = t.autograd.grad(f.penult(x_example)[i],
+                grad = t.autograd.grad(f.penult(x_example).squeeze()[i],
                                        x_example)[0]
             else:
                 grad = t.autograd.grad(f.classify(x_example)[i],
@@ -434,8 +438,13 @@ def plot_jacobian_spectrum(x_samples, f, epoch, use_penult=False):
         u, s, v = t.svd(jacobian)
         # print(s)
         spectrum = s.detach().cpu().numpy()
-        plt.scatter(np.arange(0, args.n_classes), spectrum)
-        plt.savefig("spectrum_digit{}_epoch{}".format(c, epoch))
+        if use_penult:
+            plt.scatter(np.arange(0, penult_plot_num), spectrum[0:penult_plot_num])
+            fig_name = "spectrum_digit{}_epoch{}_penult".format(c, epoch)
+        else:
+            plt.scatter(np.arange(0, args.n_classes), spectrum)
+            fig_name = "spectrum_digit{}_epoch{}".format(c, epoch)
+        plt.savefig(fig_name)
         # plt.show()
         plt.close()
 
@@ -519,14 +528,6 @@ def main(args):
 
             if args.vat:
 
-                # if args.class_cond_p_x_sample:
-                #     assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
-                #     y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(
-                #         device)
-                #     x_q = sample_q(f, replay_buffer, y=y_q)
-                # else:
-                #     x_q = sample_q(f, replay_buffer)
-
                 optim.zero_grad()
                 vat_loss = VATLoss(xi=10.0, eps=1.0, ip=1)
                 lds = vat_loss(f, x_p_d)
@@ -551,6 +552,11 @@ def main(args):
                             cur_iter,
                             loss.item(),
                             acc.item()))
+
+                if args.svd_jacobian and cur_iter % args.svd_every == 0:
+                    plot_jacobian_spectrum(static_samples, f, epoch)
+                    plot_jacobian_spectrum(static_samples, f, epoch,
+                                           use_penult=True)
 
             else:
 
@@ -602,8 +608,10 @@ def main(args):
                                                                                      l_p_y_given_x.item(),
                                                                                      acc.item()))
 
-                        if args.svd_jacobian:
-                            plot_jacobian_spectrum(static_samples, f, epoch)
+                    if args.svd_jacobian and cur_iter % args.svd_every == 0:
+                        plot_jacobian_spectrum(static_samples, f, epoch)
+                        plot_jacobian_spectrum(static_samples, f, epoch,
+                                               use_penult=True)
 
                     L += args.p_y_given_x_weight * l_p_y_given_x
 
@@ -767,6 +775,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_moons_data", type=float, default=500)
     parser.add_argument("--class_cond_label_prop", action="store_true", help="Train on generated class cond samples too")
     parser.add_argument("--svd_jacobian", action="store_true", help="Do SVD on Jacobian matrix at data points to help understand model behaviour")
+    parser.add_argument("--svd_every", type=int, default=300, help="Iterations between svd")
 
 
 
