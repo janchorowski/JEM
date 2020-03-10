@@ -128,7 +128,7 @@ def _l2_normalize(d):
 class VATLoss(nn.Module):
     # Source https://github.com/lyakaap/VAT-pytorch/blob/master/vat.py
 
-    def __init__(self, xi=10.0, eps=1.0, ip=1):
+    def __init__(self, xi=10.0, eps=2.0, ip=1):
         """VAT loss
         :param xi: hyperparameter of VAT (default: 10.0)
         :param eps: hyperparameter of VAT (default: 1.0)
@@ -339,10 +339,12 @@ def get_data(args):
     dload_train = DataLoader(dset_train, batch_size=args.batch_size, shuffle=True, num_workers=4, drop_last=True)
     dload_train_labeled = DataLoader(dset_train_labeled, batch_size=args.batch_size, shuffle=True, num_workers=4, drop_last=True)
     dload_train_labeled = cycle(dload_train_labeled)
+    dload_train_labeled_static = DataLoader(dset_train_labeled, batch_size=args.batch_size, shuffle=False, num_workers=4, drop_last=True)
+    dload_train_labeled_static = cycle(dload_train_labeled_static)
     dset_test = dataset_fn(False, transform_test)
     dload_valid = DataLoader(dset_valid, batch_size=100, shuffle=False, num_workers=4, drop_last=False)
     dload_test = DataLoader(dset_test, batch_size=100, shuffle=False, num_workers=4, drop_last=False)
-    return dload_train, dload_train_labeled, dload_valid,dload_test, dset_train, dset_train_labeled
+    return dload_train, dload_train_labeled, dload_valid,dload_test, dset_train, dset_train_labeled, dload_train_labeled_static
 
 
 def get_sample_q(args, device):
@@ -471,7 +473,7 @@ def main(args):
         args.im_sz = 32
 
     # datasets
-    dload_train, dload_train_labeled, dload_valid, dload_test, dset_train, dset_train_labeled = get_data(args)
+    dload_train, dload_train_labeled, dload_valid, dload_test, dset_train, dset_train_labeled, dload_train_labeled_static = get_data(args)
 
     device = t.device('cuda' if t.cuda.is_available() else 'cpu')
 
@@ -497,7 +499,8 @@ def main(args):
         # zero init at first
         static_samples = init_random(args, args.n_classes).to(device) * 0
         count = 0
-        for i, (x_lab, y_lab) in enumerate(dload_train_labeled):
+        # Assumes we have an instance of every class (might have infinite loop if we don't)
+        for i, (x_lab, y_lab) in enumerate(dload_train_labeled_static):
             for j in range(len(y_lab)):
                 if static_samples[y_lab[j]].sum() == 0:
                     static_samples[y_lab[j]] = x_lab[j]
@@ -529,7 +532,7 @@ def main(args):
             if args.vat:
 
                 optim.zero_grad()
-                vat_loss = VATLoss(xi=10.0, eps=1.0, ip=1)
+                vat_loss = VATLoss(xi=10.0, eps=args.vat_eps, ip=1)
                 lds = vat_loss(f, x_p_d)
                 # lds = vat_loss(f, x_q)
 
@@ -776,6 +779,7 @@ if __name__ == "__main__":
     parser.add_argument("--class_cond_label_prop", action="store_true", help="Train on generated class cond samples too")
     parser.add_argument("--svd_jacobian", action="store_true", help="Do SVD on Jacobian matrix at data points to help understand model behaviour")
     parser.add_argument("--svd_every", type=int, default=300, help="Iterations between svd")
+    parser.add_argument("--vat_eps", type=float, default=2.0)
 
 
 
