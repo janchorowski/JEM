@@ -125,8 +125,9 @@ def _l2_normalize(d):
     d /= t.norm(d_reshaped, dim=1, keepdim=True) + 1e-8
     return d
 
+
 class VATLoss(nn.Module):
-    # Source https://github.com/lyakaap/VAT-pytorch/blob/master/vat.py
+    # Adapted from https://github.com/lyakaap/VAT-pytorch/blob/master/vat.py
 
     def __init__(self, xi=10.0, eps=2.0, ip=1):
         """VAT loss
@@ -165,6 +166,29 @@ class VATLoss(nn.Module):
 
         return lds
 
+
+class LDSLoss(nn.Module):
+    # Adapted from https://github.com/lyakaap/VAT-pytorch/blob/master/vat.py
+
+    def __init__(self, n_steps):
+        # n_steps = args.label_prop_n_steps
+        super(LDSLoss, self).__init__()
+        self.n_steps = n_steps
+
+    def forward(self, model, x, sample_q, seed_batch):
+        with t.no_grad():
+            pred = t.nn.functional.softmax(model.classify(x), dim=1)
+
+        # get a sample with a certain number of steps
+        # args.label_prop_n_steps
+        samples = sample_q(model, replay_buffer=[], y=pred.argmax(dim=1), n_steps=self.n_steps, seed_batch=seed_batch)
+
+        # calc LDS between prediction on sample and prediction on original
+        pred_hat = model.classify(samples)
+        logp_hat = t.nn.functional.log_softmax(pred_hat, dim=1)
+        lds = t.nn.functional.kl_div(logp_hat, pred, reduction='batchmean')
+
+        return lds
 
 
 def cycle(loader):
@@ -366,7 +390,7 @@ def get_sample_q(args, device):
         samples = choose_random * random_samples + (1 - choose_random) * buffer_samples
         return samples.to(device), inds
 
-    def sample_q(f, replay_buffer, y=None, n_steps=args.n_steps):
+    def sample_q(f, replay_buffer, y=None, n_steps=args.n_steps, seed_batch=None):
         """this func takes in replay_buffer now so we have the option to sample from
         scratch (i.e. replay_buffer==[]).  See test_wrn_ebm.py for example.
         """
@@ -374,7 +398,10 @@ def get_sample_q(args, device):
         # get batch size
         bs = args.batch_size if y is None else y.size(0)
         # generate initial samples and buffer inds of those samples (if buffer is used)
-        init_sample, buffer_inds = sample_p_0(replay_buffer, bs=bs, y=y)
+        if seed_batch is not None:
+            init_sample, buffer_inds = seed_batch, []
+        else:
+            init_sample, buffer_inds = sample_p_0(replay_buffer, bs=bs, y=y)
         x_k = t.autograd.Variable(init_sample, requires_grad=True)
         # sgld
         for k in range(n_steps):
@@ -383,9 +410,12 @@ def get_sample_q(args, device):
         f.train()
         final_samples = x_k.detach()
         # update replay buffer
-        if len(replay_buffer) > 0:
-            replay_buffer[buffer_inds] = final_samples.cpu()
+        if seed_batch is None:
+            # Just detaching functionality for now
+            if len(replay_buffer) > 0:
+                replay_buffer[buffer_inds] = final_samples.cpu()
         return final_samples
+
     return sample_q
 
 
@@ -534,9 +564,6 @@ def main(args):
                 optim.zero_grad()
                 vat_loss = VATLoss(xi=10.0, eps=args.vat_eps, ip=1)
                 lds = vat_loss(f, x_p_d)
-                # lds = vat_loss(f, x_q)
-
-                # lds = vat_loss(f.classify, x_q)
 
                 logits = f.classify(x_lab)
 
@@ -570,18 +597,28 @@ def main(args):
                         assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
                         y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
                         x_q = sample_q(f, replay_buffer, y=y_q)
+
+
                         if args.class_cond_label_prop and cur_iter > args.warmup_iters:
-                            logits_pseudo = f.classify(x_q)
-                            l_p_y_given_pseudo_x = nn.CrossEntropyLoss()(logits_pseudo, y_q)
-                            L += args.label_prop_weight * l_p_y_given_pseudo_x
-                            if cur_iter % args.print_every == 0:
-                                acc = (logits_pseudo.max(1)[1] == y_q).float().mean()
-                                print(
-                                    'Pseudo_P(y|x) {}:{:>d} loss={:>14.9f}, acc={:>14.9f}'.format(
-                                        epoch,
-                                        cur_iter,
-                                        l_p_y_given_pseudo_x.item(),
-                                        acc.item()))
+
+                            optim.zero_grad()
+                            lds_loss = LDSLoss(n_steps=args.label_prop_n_steps)
+                            lds = lds_loss(f, x_p_d, sample_q, seed_batch=x_p_d)
+
+                            L += args.label_prop_weight * lds
+
+                            # logits_pseudo = f.classify(x_q)
+                            # l_p_y_given_pseudo_x = nn.CrossEntropyLoss()(logits_pseudo, y_q)
+                            # L += args.label_prop_weight * l_p_y_given_pseudo_x
+                            # if cur_iter % args.print_every == 0:
+                            #     acc = (logits_pseudo.max(1)[1] == y_q).float().mean()
+                            #     print(
+                            #         'Pseudo_P(y|x) {}:{:>d} loss={:>14.9f}, acc={:>14.9f}'.format(
+                            #             epoch,
+                            #             cur_iter,
+                            #             l_p_y_given_pseudo_x.item(),
+                            #             acc.item()))
+
                     else:
                         x_q = sample_q(f, replay_buffer)  # sample from log-sumexp
 
@@ -776,7 +813,9 @@ if __name__ == "__main__":
     parser.add_argument("--vat", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--vat_weight", type=float, default=1.0)
     parser.add_argument("--n_moons_data", type=float, default=500)
-    parser.add_argument("--class_cond_label_prop", action="store_true", help="Train on generated class cond samples too")
+    parser.add_argument("--class_cond_label_prop", action="store_true", help="Enforce consistency/LDS between data and samples too")
+    parser.add_argument("--label_prop_n_steps", type=int, default=1,
+                        help="number of steps of SGLD sampler for label prop idea")
     parser.add_argument("--svd_jacobian", action="store_true", help="Do SVD on Jacobian matrix at data points to help understand model behaviour")
     parser.add_argument("--svd_every", type=int, default=300, help="Iterations between svd")
     parser.add_argument("--vat_eps", type=float, default=2.0)
