@@ -660,6 +660,11 @@ def main(args):
 
                     L += args.p_x_y_weight * l_p_x_y
 
+                if args.vat_also:
+                    vat_loss = VATLoss(xi=10.0, eps=args.vat_eps, ip=1)
+                    lds = vat_loss(f, x_p_d)
+                    L += args.vat_also_weight * lds
+
                 if args.class_cond_label_prop and cur_iter > args.warmup_iters:
 
                     lds_loss = LDSLoss(n_steps=args.label_prop_n_steps)
@@ -819,7 +824,9 @@ if __name__ == "__main__":
                         help="number of steps of SGLD sampler for label prop idea")
     parser.add_argument("--svd_jacobian", action="store_true", help="Do SVD on Jacobian matrix at data points to help understand model behaviour")
     parser.add_argument("--svd_every", type=int, default=300, help="Iterations between svd")
-    parser.add_argument("--vat_eps", type=float, default=2.0)
+    parser.add_argument("--vat_eps", type=float, default=3.0)
+    parser.add_argument("--vat_also_weight", type=float, default=1.0)
+    parser.add_argument("--vat_also", action="store_true", help="Run VAT together with JEM")
 
 
 
