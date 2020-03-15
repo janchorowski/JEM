@@ -591,22 +591,16 @@ def main(args):
             else:
 
                 if args.p_x_weight > 0:  # maximize log p(x)
-                    if args.class_cond_label_prop:
-                        assert args.class_cond_p_x_sample, "need class-conditional samples for psuedo label prop"
+                    # if args.class_cond_label_prop:
+                        # May no longer need class cond samples now
+                        # assert args.class_cond_p_x_sample, "need class-conditional samples for psuedo label prop"
                     if args.class_cond_p_x_sample:
                         assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
                         y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
                         x_q = sample_q(f, replay_buffer, y=y_q)
 
 
-                        if args.class_cond_label_prop and cur_iter > args.warmup_iters:
-
-                            optim.zero_grad()
-                            lds_loss = LDSLoss(n_steps=args.label_prop_n_steps)
-                            lds = lds_loss(f, x_p_d, sample_q, seed_batch=x_p_d)
-
-                            L += args.label_prop_weight * lds
-
+                        # if args.class_cond_label_prop and cur_iter > args.warmup_iters:
                             # logits_pseudo = f.classify(x_q)
                             # l_p_y_given_pseudo_x = nn.CrossEntropyLoss()(logits_pseudo, y_q)
                             # L += args.label_prop_weight * l_p_y_given_pseudo_x
@@ -665,6 +659,13 @@ def main(args):
                                                                                                           fp - fq))
 
                     L += args.p_x_y_weight * l_p_x_y
+
+                if args.class_cond_label_prop and cur_iter > args.warmup_iters:
+
+                    lds_loss = LDSLoss(n_steps=args.label_prop_n_steps)
+                    lds = lds_loss(f, x_p_d, sample_q, seed_batch=x_p_d)
+
+                    L += args.label_prop_weight * lds
 
                 # break if the loss diverged...easier for poppa to run experiments this way
                 if L.abs().item() > 1e8:
