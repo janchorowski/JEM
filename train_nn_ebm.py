@@ -126,6 +126,12 @@ def _l2_normalize(d):
     return d
 
 
+def cond_entropy(logits):
+    probs = t.softmax(logits, dim=1)
+    # Use log softmax for stability.
+    return - t.sum(probs * t.log_softmax(logits, dim=1)) / probs.shape[0]
+
+
 class VATLoss(nn.Module):
     # Adapted from https://github.com/lyakaap/VAT-pytorch/blob/master/vat.py
 
@@ -569,6 +575,10 @@ def main(args):
 
                 loss = args.p_y_given_x_weight * nn.CrossEntropyLoss()(logits, y_lab) + args.vat_weight * lds
 
+                if args.ent_min:
+                    loss += cond_entropy(logits)
+
+
                 loss.backward()
                 optim.step()
 
@@ -616,8 +626,6 @@ def main(args):
                     else:
                         x_q = sample_q(f, replay_buffer)  # sample from log-sumexp
 
-                    # TODO the arg is alredy here, and the smapling is already done too. All I need to do is add the update based on cross entropy for new samples too (just extend the classifier batch?)
-
                     fp_all = f(x_p_d)
                     fq_all = f(x_q)
                     fp = fp_all.mean()
@@ -629,11 +637,10 @@ def main(args):
                                                                                                        fp - fq))
                     L += args.p_x_weight * l_p_x
 
+
                 if args.p_y_given_x_weight > 0:  # maximize log p(y | x)
                     logits = f.classify(x_lab)
                     l_p_y_given_x = nn.CrossEntropyLoss()(logits, y_lab)
-
-
 
                     if cur_iter % args.print_every == 0:
                         acc = (logits.max(1)[1] == y_lab).float().mean()
@@ -648,6 +655,9 @@ def main(args):
                                                use_penult=True)
 
                     L += args.p_y_given_x_weight * l_p_y_given_x
+
+                    if args.ent_min:
+                        L += cond_entropy(logits)
 
                 if args.p_x_y_weight > 0:  # maximize log p(x, y)
                     assert not args.uncond, "this objective can only be trained for class-conditional EBM DUUUUUUUUHHHH!!!"
@@ -827,6 +837,7 @@ if __name__ == "__main__":
     parser.add_argument("--vat_eps", type=float, default=3.0)
     parser.add_argument("--vat_also_weight", type=float, default=1.0)
     parser.add_argument("--vat_also", action="store_true", help="Run VAT together with JEM")
+    parser.add_argument("--ent_min", action="store_true", help="Run With Entropy Minimization")
 
 
 
