@@ -279,8 +279,8 @@ def get_data(args):
              tr.RandomCrop(args.im_sz),
              tr.ToTensor(),
              # tr.Normalize((0.5,), (0.5,)),
-             # lambda x: x + args.sigma * t.randn_like(x)
-             logit_transform
+             logit_transform,
+             lambda x: x + args.mnist_sigma * t.randn_like(x)
              ]
         )
     elif args.dataset == "moons":
@@ -299,7 +299,8 @@ def get_data(args):
             [tr.ToTensor(),
              # tr.Normalize((.5,), (.5,)),
              # lambda x: x + args.sigma * t.randn_like(x)
-             logit_transform
+             logit_transform,
+             lambda x: x + args.mnist_sigma * t.randn_like(x)
             ]
         )
     elif args.dataset == "moons":
@@ -796,6 +797,8 @@ if __name__ == "__main__":
     parser.add_argument("--dropout_rate", type=float, default=0.0)
     parser.add_argument("--sigma", type=float, default=3e-2,
                         help="stddev of gaussian noise to add to input, .03 works but .1 is more stable")
+    parser.add_argument("--mnist_sigma", type=float, default=1e-2,
+                        help="stddev of gaussian noise to add to input for mnist, after logit transform")
     parser.add_argument("--weight_decay", type=float, default=0.0)
     # network
     parser.add_argument("--norm", type=str, default=None, choices=[None, "norm", "batch", "instance", "layer", "act"],
