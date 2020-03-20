@@ -300,7 +300,7 @@ def get_data(args):
              # tr.Normalize((.5,), (.5,)),
              # lambda x: x + args.sigma * t.randn_like(x)
              logit_transform,
-             lambda x: x + args.mnist_sigma * t.randn_like(x)
+             # lambda x: x + args.mnist_sigma * t.randn_like(x)
             ]
         )
     elif args.dataset == "moons":
