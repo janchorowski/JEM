@@ -22,7 +22,7 @@ class VirtualBatchNormNN(Module):
 
         # define gamma and beta parameters
         gamma = torch.normal(mean=torch.ones(1, num_features), std=0.02)
-        self.gamma = Parameter(gamma.float().cuda(async=True))
+        self.gamma = Parameter(gamma.float().cuda())
         self.beta = Parameter(torch.cuda.FloatTensor(1, num_features).fill_(0))
 
     def get_stats(self, x):
@@ -120,7 +120,7 @@ class VirtualBatchNorm1d(Module):
 
         # define gamma and beta parameters
         gamma = torch.normal(mean=torch.ones(1, num_features, 1), std=0.02)
-        self.gamma = Parameter(gamma.float().cuda(async=True))
+        self.gamma = Parameter(gamma.float().cuda())
         self.beta = Parameter(torch.cuda.FloatTensor(1, num_features, 1).fill_(0))
 
     def get_stats(self, x):
