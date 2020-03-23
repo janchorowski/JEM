@@ -33,7 +33,7 @@ seed = 1
 # n_ch = 3
 from sklearn import datasets
 import matplotlib.pyplot as plt
-
+from vbnorm import VirtualBatchNormNN
 
 
 class DataSubset(Dataset):
@@ -52,42 +52,64 @@ class DataSubset(Dataset):
 
 
 class NeuralNet(nn.Module):
-    def __init__(self, input_size, hidden_size, extra_layers=2):
+    def __init__(self, input_size, hidden_size, extra_layers=2, use_vbnorm=False, ref_x=None):
         super(NeuralNet, self).__init__()
         self.layers = nn.ModuleList()
+        self.use_vbnorm = use_vbnorm
 
         layer_in = nn.Linear(input_size, hidden_size)
         self.layers.append(layer_in)
+        self.ref_x = ref_x
+        if use_vbnorm:
+            assert ref_x is not None
+            self.layers.append(VirtualBatchNormNN(hidden_size))
         for i in range(extra_layers):
             self.layers.append(nn.Linear(hidden_size, hidden_size))
-        # self.layer_out = nn.Linear(hidden_size, output_size)
-        # self.layers.append(layer_out)
+            if use_vbnorm:
+                self.layers.append(VirtualBatchNormNN(hidden_size))
+        # Note output layer not needed here because it is done in class F
 
         self.relu = nn.ReLU()
 
+
     def forward(self, x, y=None):
+        ref_x = self.ref_x
+        if len(ref_x.shape) > 2:
+            ref_x = ref_x.reshape(-1, x.shape[-1]**2)
         if len(x.shape) > 2:
             x = x.reshape(-1, x.shape[-1]**2)
         for layer in self.layers:
-            x = layer(x)
-            x = self.relu(x)
-        # logits = self.layer_out(x)s
+            if isinstance(layer, VirtualBatchNormNN):
+                assert ref_x is not None
+                ref_x, mean, mean_sq = layer(ref_x, None, None)
+                x, _, _ = layer(x, mean, mean_sq)
+            else:
+                ref_x = layer(ref_x)
+                ref_x = self.relu(ref_x)
+                x = layer(x)
+                x = self.relu(x)
+        # logits = self.layer_out(x)
         output = x
         return output
 
 
 class F(nn.Module):
-    def __init__(self, depth=28, width=2, norm=None, dropout_rate=0.0, im_sz=32, use_nn=False, input_size=None, n_classes=10):
+    def __init__(self, depth=28, width=2, norm=None, dropout_rate=0.0, im_sz=32, use_nn=False, input_size=None, n_classes=10, ref_x=None):
         if input_size is not None:
             assert use_nn == True #input size is for non-images, ie non-conv.
         super(F, self).__init__()
 
         if use_nn:
             hidden_units = 500
+
+            use_vbnorm = False
+            if args.vbnorm:
+                use_vbnorm = True
+
             if input_size is None:
-                self.f = NeuralNet(im_sz**2, hidden_units, extra_layers=2)
+                self.f = NeuralNet(im_sz**2, hidden_units, extra_layers=2, use_vbnorm=use_vbnorm, ref_x=ref_x)
             else:
-                self.f = NeuralNet(input_size, hidden_units, extra_layers=2)
+                self.f = NeuralNet(input_size, hidden_units, extra_layers=2, use_vbnorm=use_vbnorm, ref_x=ref_x)
             self.f.last_dim = hidden_units
         else:
             self.f = wideresnet.Wide_ResNet(depth, width, norm=norm, dropout_rate=dropout_rate)
@@ -109,8 +131,8 @@ class F(nn.Module):
 
 
 class CCF(F):
-    def __init__(self, depth=28, width=2, norm=None, dropout_rate=0.0, im_sz=32, use_nn=False, input_size=None, n_classes=10):
-        super(CCF, self).__init__(depth, width, norm=norm, dropout_rate=dropout_rate, n_classes=n_classes, im_sz=im_sz, input_size=input_size, use_nn=use_nn)
+    def __init__(self, depth=28, width=2, norm=None, dropout_rate=0.0, im_sz=32, use_nn=False, input_size=None, n_classes=10, ref_x=None):
+        super(CCF, self).__init__(depth, width, norm=norm, dropout_rate=dropout_rate, n_classes=n_classes, im_sz=im_sz, input_size=input_size, use_nn=use_nn, ref_x=ref_x)
 
     def forward(self, x, y=None):
         logits = self.classify(x)
@@ -230,7 +252,7 @@ def init_random(args, bs):
         out = t.FloatTensor(bs, args.n_ch, args.im_sz, args.im_sz).uniform_(-1, 1)
     return out
 
-def get_model_and_buffer(args, device, sample_q):
+def get_model_and_buffer(args, device, sample_q, ref_x=None):
     model_cls = F if args.uncond else CCF
     args.input_size = None
     if args.dataset == "mnist" or args.dataset == "moons":
@@ -240,7 +262,7 @@ def get_model_and_buffer(args, device, sample_q):
             args.input_size = 2
     else:
         use_nn=False
-    f = model_cls(args.depth, args.width, args.norm, dropout_rate=args.dropout_rate, n_classes=args.n_classes, im_sz=args.im_sz, input_size=args.input_size, use_nn=use_nn)
+    f = model_cls(args.depth, args.width, args.norm, dropout_rate=args.dropout_rate, n_classes=args.n_classes, im_sz=args.im_sz, input_size=args.input_size, use_nn=use_nn, ref_x=ref_x)
     if not args.uncond:
         assert args.buffer_size % args.n_classes == 0, "Buffer size must be divisible by args.n_classes"
     if args.load_path is None:
@@ -514,8 +536,12 @@ def main(args):
 
     device = t.device('cuda' if t.cuda.is_available() else 'cpu')
 
+    ref_x = None
+    if args.vbnorm:
+        ref_x = next(iter(dload_train_labeled))[0].to(device)
+
     sample_q = get_sample_q(args, device)
-    f, replay_buffer = get_model_and_buffer(args, device, sample_q)
+    f, replay_buffer = get_model_and_buffer(args, device, sample_q, ref_x)
 
     sqrt = lambda x: int(t.sqrt(t.Tensor([x])))
     plot = lambda p, x: tv.utils.save_image(t.clamp(x, -1, 1), p, normalize=True, nrow=sqrt(x.size(0)))
@@ -842,6 +868,7 @@ if __name__ == "__main__":
     parser.add_argument("--vat_also", action="store_true", help="Run VAT together with JEM")
     parser.add_argument("--ent_min", action="store_true", help="Run With Entropy Minimization")
     parser.add_argument("--ent_min_weight", type=float, default=0.1)
+    parser.add_argument("--vbnorm", action="store_true", help="Run with Virtual Batch Norm")
 
 
 
