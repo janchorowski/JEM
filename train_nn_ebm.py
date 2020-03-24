@@ -34,6 +34,8 @@ seed = 1
 from sklearn import datasets
 import matplotlib.pyplot as plt
 from vbnorm import VirtualBatchNormNN
+from batch_renormalization import BatchRenormalizationNN
+from batchrenorm import BatchRenorm1d
 
 
 class DataSubset(Dataset):
@@ -62,11 +64,18 @@ class NeuralNet(nn.Module):
         self.ref_x = ref_x
         if use_vbnorm:
             assert ref_x is not None
-            self.layers.append(VirtualBatchNormNN(hidden_size))
+            # self.layers.append(VirtualBatchNormNN(hidden_size))
+            # self.layers.append(BatchRenormalizationNN(hidden_size))
+            self.layers.append(BatchRenorm1d(hidden_size))
+            # self.layers.append(nn.BatchNorm1d(num_features=hidden_size))
         for i in range(extra_layers):
             self.layers.append(nn.Linear(hidden_size, hidden_size))
             if use_vbnorm:
-                self.layers.append(VirtualBatchNormNN(hidden_size))
+                # self.layers.append(VirtualBatchNormNN(hidden_size))
+                # self.layers.append(VirtualBatchNormNN(hidden_size))
+                self.layers.append(BatchRenorm1d(hidden_size))
+                # self.layers.append(nn.BatchNorm1d(num_features=hidden_size))
+
         # Note output layer not needed here because it is done in class F
 
         self.relu = nn.ReLU()
@@ -390,6 +399,7 @@ def get_data(args):
         dataset_fn(True, transform_test),
         inds=valid_inds)
     dload_train = DataLoader(dset_train, batch_size=args.batch_size, shuffle=True, num_workers=4, drop_last=True)
+    dload_train_vbnorm = DataLoader(dset_train, batch_size=args.vbnorm_batch_size, shuffle=False, num_workers=4, drop_last=True)
     dload_train_labeled = DataLoader(dset_train_labeled, batch_size=args.batch_size, shuffle=True, num_workers=4, drop_last=True)
     dload_train_labeled = cycle(dload_train_labeled)
     dload_train_labeled_static = DataLoader(dset_train_labeled, batch_size=args.batch_size, shuffle=False, num_workers=4, drop_last=True)
@@ -397,7 +407,7 @@ def get_data(args):
     dset_test = dataset_fn(False, transform_test)
     dload_valid = DataLoader(dset_valid, batch_size=100, shuffle=False, num_workers=4, drop_last=False)
     dload_test = DataLoader(dset_test, batch_size=100, shuffle=False, num_workers=4, drop_last=False)
-    return dload_train, dload_train_labeled, dload_valid,dload_test, dset_train, dset_train_labeled, dload_train_labeled_static
+    return dload_train, dload_train_labeled, dload_valid,dload_test, dset_train, dset_train_labeled, dload_train_labeled_static, dload_train_vbnorm
 
 
 def get_sample_q(args, device):
@@ -532,13 +542,14 @@ def main(args):
         args.im_sz = 32
 
     # datasets
-    dload_train, dload_train_labeled, dload_valid, dload_test, dset_train, dset_train_labeled, dload_train_labeled_static = get_data(args)
+    dload_train, dload_train_labeled, dload_valid, dload_test, dset_train, \
+    dset_train_labeled, dload_train_labeled_static, dload_train_vbnorm = get_data(args)
 
     device = t.device('cuda' if t.cuda.is_available() else 'cpu')
 
     ref_x = None
     if args.vbnorm:
-        ref_x = next(iter(dload_train_labeled))[0].to(device)
+        ref_x = next(iter(dload_train_vbnorm))[0].to(device)
 
     sample_q = get_sample_q(args, device)
     f, replay_buffer = get_model_and_buffer(args, device, sample_q, ref_x)
@@ -869,6 +880,7 @@ if __name__ == "__main__":
     parser.add_argument("--ent_min", action="store_true", help="Run With Entropy Minimization")
     parser.add_argument("--ent_min_weight", type=float, default=0.1)
     parser.add_argument("--vbnorm", action="store_true", help="Run with Virtual Batch Norm")
+    parser.add_argument("--vbnorm_batch_size", type=int, default=50)
 
 
 
