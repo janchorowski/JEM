@@ -836,7 +836,7 @@ if __name__ == "__main__":
     parser.add_argument("--dropout_rate", type=float, default=0.0)
     parser.add_argument("--sigma", type=float, default=3e-2,
                         help="stddev of gaussian noise to add to input, .03 works but .1 is more stable")
-    parser.add_argument("--mnist_sigma", type=float, default=1e-2,
+    parser.add_argument("--mnist_sigma", type=float, default=0.0,
                         help="stddev of gaussian noise to add to input for mnist, after logit transform")
     parser.add_argument("--weight_decay", type=float, default=0.0)
     # network
