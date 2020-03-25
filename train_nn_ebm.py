@@ -34,7 +34,7 @@ seed = 1
 from sklearn import datasets
 import matplotlib.pyplot as plt
 from vbnorm import VirtualBatchNormNN
-from batch_renormalization import BatchRenormalizationNN
+# from batch_renormalization import BatchRenormalizationNN
 from batchrenorm import BatchRenorm1d
 
 
