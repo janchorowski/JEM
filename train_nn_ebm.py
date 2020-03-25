@@ -64,16 +64,16 @@ class NeuralNet(nn.Module):
         self.ref_x = ref_x
         if use_vbnorm:
             assert ref_x is not None
-            # self.layers.append(VirtualBatchNormNN(hidden_size))
+            self.layers.append(VirtualBatchNormNN(hidden_size))
             # self.layers.append(BatchRenormalizationNN(hidden_size))
-            self.layers.append(BatchRenorm1d(hidden_size))
+            # self.layers.append(BatchRenorm1d(hidden_size))
             # self.layers.append(nn.BatchNorm1d(num_features=hidden_size))
         for i in range(extra_layers):
             self.layers.append(nn.Linear(hidden_size, hidden_size))
             if use_vbnorm:
+                self.layers.append(VirtualBatchNormNN(hidden_size))
                 # self.layers.append(VirtualBatchNormNN(hidden_size))
-                # self.layers.append(VirtualBatchNormNN(hidden_size))
-                self.layers.append(BatchRenorm1d(hidden_size))
+                # self.layers.append(BatchRenorm1d(hidden_size))
                 # self.layers.append(nn.BatchNorm1d(num_features=hidden_size))
 
         # Note output layer not needed here because it is done in class F
@@ -82,9 +82,10 @@ class NeuralNet(nn.Module):
 
 
     def forward(self, x, y=None):
-        ref_x = self.ref_x
-        if len(ref_x.shape) > 2:
-            ref_x = ref_x.reshape(-1, x.shape[-1]**2)
+        if args.vbnorm:
+            ref_x = self.ref_x
+            if len(ref_x.shape) > 2:
+                ref_x = ref_x.reshape(-1, x.shape[-1]**2)
         if len(x.shape) > 2:
             x = x.reshape(-1, x.shape[-1]**2)
         for layer in self.layers:
@@ -93,8 +94,9 @@ class NeuralNet(nn.Module):
                 ref_x, mean, mean_sq = layer(ref_x, None, None)
                 x, _, _ = layer(x, mean, mean_sq)
             else:
-                ref_x = layer(ref_x)
-                ref_x = self.relu(ref_x)
+                if args.vbnorm:
+                    ref_x = layer(ref_x)
+                    ref_x = self.relu(ref_x)
                 x = layer(x)
                 x = self.relu(x)
         # logits = self.layer_out(x)
