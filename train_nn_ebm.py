@@ -67,14 +67,16 @@ class NeuralNet(nn.Module):
             self.layers.append(VirtualBatchNormNN(hidden_size))
             # self.layers.append(BatchRenormalizationNN(hidden_size))
             # self.layers.append(BatchRenorm1d(hidden_size))
-            # self.layers.append(nn.BatchNorm1d(num_features=hidden_size))
+        elif args.batch_norm:
+            self.layers.append(nn.BatchNorm1d(num_features=hidden_size))
         for i in range(extra_layers):
             self.layers.append(nn.Linear(hidden_size, hidden_size))
             if use_vbnorm:
                 self.layers.append(VirtualBatchNormNN(hidden_size))
                 # self.layers.append(VirtualBatchNormNN(hidden_size))
                 # self.layers.append(BatchRenorm1d(hidden_size))
-                # self.layers.append(nn.BatchNorm1d(num_features=hidden_size))
+            elif args.batch_norm:
+                self.layers.append(nn.BatchNorm1d(num_features=hidden_size))
 
         # Note output layer not needed here because it is done in class F
 
@@ -93,6 +95,8 @@ class NeuralNet(nn.Module):
                 assert ref_x is not None
                 ref_x, mean, mean_sq = layer(ref_x, None, None)
                 x, _, _ = layer(x, mean, mean_sq)
+            elif isinstance(layer, BatchRenorm1d):
+                x = layer(x)
             else:
                 if args.vbnorm:
                     ref_x = layer(ref_x)
@@ -307,15 +311,23 @@ def get_data(args):
              lambda x: x + args.sigma * t.randn_like(x)]
         )
     elif args.dataset == "mnist":
-        transform_train = tr.Compose(
-            [tr.Pad(4, padding_mode="reflect"),
-             tr.RandomCrop(args.im_sz),
-             tr.ToTensor(),
-             # tr.Normalize((0.5,), (0.5,)),
-             logit_transform,
-             lambda x: x + args.mnist_sigma * t.randn_like(x)
-             ]
-        )
+        if args.mnist_no_logit_transform:
+            transform_train = tr.Compose(
+                [tr.Pad(4, padding_mode="reflect"),
+                 tr.RandomCrop(args.im_sz),
+                 tr.ToTensor(),
+                 lambda x: x + args.mnist_sigma * t.randn_like(x)
+                 ]
+            )
+        else:
+            transform_train = tr.Compose(
+                [tr.Pad(4, padding_mode="reflect"),
+                 tr.RandomCrop(args.im_sz),
+                 tr.ToTensor(),
+                 logit_transform,
+                 lambda x: x + args.mnist_sigma * t.randn_like(x)
+                 ]
+            )
     elif args.dataset == "moons":
         transform_train = None
     else:
@@ -328,14 +340,23 @@ def get_data(args):
              lambda x: x + args.sigma * t.randn_like(x)]
         )
     if args.dataset == "mnist":
-        transform_test = tr.Compose(
-            [tr.ToTensor(),
-             # tr.Normalize((.5,), (.5,)),
-             # lambda x: x + args.sigma * t.randn_like(x)
-             logit_transform,
-             # lambda x: x + args.mnist_sigma * t.randn_like(x)
-            ]
-        )
+        if args.mnist_no_logit_transform:
+            transform_test = tr.Compose(
+                [tr.ToTensor(),
+                 # tr.Normalize((.5,), (.5,)),
+                 # lambda x: x + args.sigma * t.randn_like(x)
+                 # lambda x: x + args.mnist_sigma * t.randn_like(x)
+                ]
+            )
+        else:
+            transform_test = tr.Compose(
+                [tr.ToTensor(),
+                 # tr.Normalize((.5,), (.5,)),
+                 # lambda x: x + args.sigma * t.randn_like(x)
+                 logit_transform,
+                 # lambda x: x + args.mnist_sigma * t.randn_like(x)
+                 ]
+            )
     elif args.dataset == "moons":
         transform_test = None
     else:
@@ -883,6 +904,9 @@ if __name__ == "__main__":
     parser.add_argument("--ent_min_weight", type=float, default=0.1)
     parser.add_argument("--vbnorm", action="store_true", help="Run with Virtual Batch Norm")
     parser.add_argument("--vbnorm_batch_size", type=int, default=50)
+    parser.add_argument("--batch_norm", action="store_true", help="Run with Batch Norm")
+    parser.add_argument("--mnist_no_logit_transform", action="store_true", help="Run MNIST without logit transform")
+
 
 
 
