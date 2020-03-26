@@ -313,10 +313,11 @@ def get_data(args):
     elif args.dataset == "mnist":
         if args.mnist_no_logit_transform:
             transform_train = tr.Compose(
-                [tr.Pad(4, padding_mode="reflect"),
-                 tr.RandomCrop(args.im_sz),
+                [
+                 # tr.Pad(4, padding_mode="reflect"),
+                 # tr.RandomCrop(args.im_sz),
                  tr.ToTensor(),
-                 lambda x: x + args.mnist_sigma * t.randn_like(x)
+                 # lambda x: x + args.mnist_sigma * t.randn_like(x)
                  ]
             )
         else:
