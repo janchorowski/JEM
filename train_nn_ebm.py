@@ -95,7 +95,7 @@ class NeuralNet(nn.Module):
                 assert ref_x is not None
                 ref_x, mean, mean_sq = layer(ref_x, None, None)
                 x, _, _ = layer(x, mean, mean_sq)
-            elif isinstance(layer, BatchRenorm1d):
+            elif isinstance(layer, BatchRenorm1d) or isinstance(layer, nn.BatchNorm1d):
                 x = layer(x)
             else:
                 if args.vbnorm:
@@ -904,7 +904,7 @@ if __name__ == "__main__":
     parser.add_argument("--ent_min", action="store_true", help="Run With Entropy Minimization")
     parser.add_argument("--ent_min_weight", type=float, default=0.1)
     parser.add_argument("--vbnorm", action="store_true", help="Run with Virtual Batch Norm")
-    parser.add_argument("--vbnorm_batch_size", type=int, default=50)
+    parser.add_argument("--vbnorm_batch_size", type=int, default=1000)
     parser.add_argument("--batch_norm", action="store_true", help="Run with Batch Norm")
     parser.add_argument("--mnist_no_logit_transform", action="store_true", help="Run MNIST without logit transform")
 
