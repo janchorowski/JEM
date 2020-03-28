@@ -320,6 +320,14 @@ def get_data(args):
                  # lambda x: x + args.mnist_sigma * t.randn_like(x)
                  ]
             )
+        elif args.mnist_no_crop:
+            transform_train = tr.Compose(
+                [
+                 tr.ToTensor(),
+                 logit_transform,
+                 lambda x: x + args.mnist_sigma * t.randn_like(x)
+                 ]
+            )
         else:
             transform_train = tr.Compose(
                 [tr.Pad(4),
@@ -348,6 +356,12 @@ def get_data(args):
                  # lambda x: x + args.sigma * t.randn_like(x)
                  # lambda x: x + args.mnist_sigma * t.randn_like(x)
                 ]
+            )
+        elif args.mnist_no_crop:
+            transform_test = tr.Compose(
+                [tr.ToTensor(),
+                 logit_transform,
+                 ]
             )
         else:
             transform_test = tr.Compose(
@@ -907,6 +921,7 @@ if __name__ == "__main__":
     parser.add_argument("--vbnorm_batch_size", type=int, default=1000)
     parser.add_argument("--batch_norm", action="store_true", help="Run with Batch Norm")
     parser.add_argument("--mnist_no_logit_transform", action="store_true", help="Run MNIST without logit transform")
+    parser.add_argument("--mnist_no_crop", action="store_true", help="Run MNIST without crop")
 
 
 
