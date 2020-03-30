@@ -680,38 +680,46 @@ def main(args):
                     # if args.class_cond_label_prop:
                         # May no longer need class cond samples now
                         # assert args.class_cond_p_x_sample, "need class-conditional samples for psuedo label prop"
-                    if args.class_cond_p_x_sample:
-                        assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
-                        y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
-                        x_q = sample_q(f, replay_buffer, y=y_q)
-
-
-                        # if args.class_cond_label_prop and cur_iter > args.warmup_iters:
-                            # logits_pseudo = f.classify(x_q)
-                            # l_p_y_given_pseudo_x = nn.CrossEntropyLoss()(logits_pseudo, y_q)
-                            # L += args.label_prop_weight * l_p_y_given_pseudo_x
-                            # if cur_iter % args.print_every == 0:
-                            #     acc = (logits_pseudo.max(1)[1] == y_q).float().mean()
-                            #     print(
-                            #         'Pseudo_P(y|x) {}:{:>d} loss={:>14.9f}, acc={:>14.9f}'.format(
-                            #             epoch,
-                            #             cur_iter,
-                            #             l_p_y_given_pseudo_x.item(),
-                            #             acc.item()))
+                    if args.score_match:
+                        x = x_p_d
+                        x.requires_grad = True
+                        logits_u = f.classify(x)
+                        # p(x) = 1/Z q(x) therefore log(p(x)) + log Z = q(x) which we defined by the generative model as logsumexp
+                        logpx_plus_Z = logits_u.logsumexp(1)
+                        # logpx_plus_Z is log_q, we have the gradient with respect to x, as in the paper, x = ksi
+                        sp = t.autograd.grad(logpx_plus_Z.sum(), x, create_graph=True, retain_graph=True)[0]
+                        # This next part is based on the sliced score matching objective, where we project along random directions
+                        e = t.randn_like(sp)
+                        eH = t.autograd.grad(sp, x, grad_outputs=e, retain_graph=True)[0]
+                        trH = (eH * e).sum(-1)
+                        # Note the sums and the correspondence with the formula in the paper
+                        sm_loss = trH + .5 * (sp ** 2).sum(-1)
+                        # Mean represents expectation which is the outer integral
+                        sm_loss = sm_loss.mean()
+                        L += args.p_x_weight * sm_loss
+                        if cur_iter % args.print_every == 0:
+                            print('sm_loss {}:{:>d} = {:>14.9f}'.format(
+                                    epoch, i, sm_loss))
 
                     else:
-                        x_q = sample_q(f, replay_buffer)  # sample from log-sumexp
+                        if args.class_cond_p_x_sample:
+                            assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
+                            y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
+                            x_q = sample_q(f, replay_buffer, y=y_q)
 
-                    fp_all = f(x_p_d)
-                    fq_all = f(x_q)
-                    fp = fp_all.mean()
-                    fq = fq_all.mean()
+                        else:
+                            x_q = sample_q(f, replay_buffer)  # sample from log-sumexp
 
-                    l_p_x = -(fp - fq)
-                    if cur_iter % args.print_every == 0:
-                        print('P(x) | {}:{:>d} f(x_p_d)={:>14.9f} f(x_q)={:>14.9f} d={:>14.9f}'.format(epoch, i, fp, fq,
-                                                                                                       fp - fq))
-                    L += args.p_x_weight * l_p_x
+                        fp_all = f(x_p_d)
+                        fq_all = f(x_q)
+                        fp = fp_all.mean()
+                        fq = fq_all.mean()
+
+                        l_p_x = -(fp - fq)
+                        if cur_iter % args.print_every == 0:
+                            print('P(x) | {}:{:>d} f(x_p_d)={:>14.9f} f(x_q)={:>14.9f} d={:>14.9f}'.format(epoch, i, fp, fq,
+                                                                                                           fp - fq))
+                        L += args.p_x_weight * l_p_x
 
 
                 if args.p_y_given_x_weight > 0:  # maximize log p(y | x)
@@ -922,6 +930,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_norm", action="store_true", help="Run with Batch Norm")
     parser.add_argument("--mnist_no_logit_transform", action="store_true", help="Run MNIST without logit transform")
     parser.add_argument("--mnist_no_crop", action="store_true", help="Run MNIST without crop")
+    parser.add_argument("--score_match", action="store_true", help="Note: so far implemented only for p(x). Use score matching instead of SGLD in training JEM")
 
 
 
