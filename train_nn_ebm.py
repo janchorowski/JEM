@@ -69,6 +69,8 @@ class NeuralNet(nn.Module):
             # self.layers.append(BatchRenorm1d(hidden_size))
         elif args.batch_norm:
             self.layers.append(nn.BatchNorm1d(num_features=hidden_size))
+        self.layers.append(nn.ReLU())
+
         for i in range(extra_layers):
             self.layers.append(nn.Linear(hidden_size, hidden_size))
             if use_vbnorm:
@@ -77,6 +79,7 @@ class NeuralNet(nn.Module):
                 # self.layers.append(BatchRenorm1d(hidden_size))
             elif args.batch_norm:
                 self.layers.append(nn.BatchNorm1d(num_features=hidden_size))
+            self.layers.append(nn.ReLU())
 
         # Note output layer not needed here because it is done in class F
 
@@ -97,13 +100,12 @@ class NeuralNet(nn.Module):
                 x, _, _ = layer(x, mean, mean_sq)
             elif isinstance(layer, BatchRenorm1d) or isinstance(layer, nn.BatchNorm1d):
                 x = layer(x)
-            else:
+            else: # now includes ReLU
                 if args.vbnorm:
                     ref_x = layer(ref_x)
-                    ref_x = self.relu(ref_x)
+                    # ref_x = self.relu(ref_x)
                 x = layer(x)
-                x = self.relu(x)
-        # logits = self.layer_out(x)
+                # x = self.relu(x)
         output = x
         return output
 
