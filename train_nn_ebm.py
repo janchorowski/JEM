@@ -53,6 +53,20 @@ class DataSubset(Dataset):
         return len(self.inds)
 
 
+class Swish(nn.Module):
+    def __init__(self, dim=-1):
+        super(Swish, self).__init__()
+        if dim > 0:
+            self.beta = nn.Parameter(t.ones((dim,)))
+        else:
+            self.beta = t.ones((1,))
+    def forward(self, x):
+        if len(x.size()) == 2:
+            return x * t.sigmoid(self.beta[None, :] * x)
+        else:
+            return x * t.sigmoid(self.beta[None, :, None, None] * x)
+
+
 class NeuralNet(nn.Module):
     def __init__(self, input_size, hidden_size, extra_layers=2, use_vbnorm=False, ref_x=None):
         super(NeuralNet, self).__init__()
@@ -69,7 +83,11 @@ class NeuralNet(nn.Module):
             # self.layers.append(BatchRenorm1d(hidden_size))
         elif args.batch_norm:
             self.layers.append(nn.BatchNorm1d(num_features=hidden_size))
-        self.layers.append(nn.ReLU())
+        if args.swish:
+            self.layers.append(Swish(hidden_size))
+        else:
+            self.layers.append(nn.ReLU())
+
 
         for i in range(extra_layers):
             self.layers.append(nn.Linear(hidden_size, hidden_size))
@@ -79,7 +97,10 @@ class NeuralNet(nn.Module):
                 # self.layers.append(BatchRenorm1d(hidden_size))
             elif args.batch_norm:
                 self.layers.append(nn.BatchNorm1d(num_features=hidden_size))
-            self.layers.append(nn.ReLU())
+            if args.swish:
+                self.layers.append(Swish(hidden_size))
+            else:
+                self.layers.append(nn.ReLU())
 
         # Note output layer not needed here because it is done in class F
 
@@ -933,6 +954,7 @@ if __name__ == "__main__":
     parser.add_argument("--mnist_no_logit_transform", action="store_true", help="Run MNIST without logit transform")
     parser.add_argument("--mnist_no_crop", action="store_true", help="Run MNIST without crop")
     parser.add_argument("--score_match", action="store_true", help="Note: so far implemented only for p(x). Use score matching instead of SGLD in training JEM")
+    parser.add_argument("--swish", action="store_true", help="Use swish activation on NN instead of ReLU")
 
 
 
