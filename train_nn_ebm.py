@@ -36,6 +36,7 @@ import matplotlib.pyplot as plt
 from vbnorm import VirtualBatchNormNN
 # from batch_renormalization import BatchRenormalizationNN
 from batchrenorm import BatchRenorm1d
+from losses import VATLoss, LDSLoss, sliced_score_matching_vr, sliced_score_matching
 
 
 class DataSubset(Dataset):
@@ -180,10 +181,6 @@ class CCF(F):
             return t.gather(logits, 1, y[:, None])
 
 
-def _l2_normalize(d):
-    d_reshaped = d.view(d.shape[0], -1, *(1 for _ in range(d.dim() - 2)))
-    d /= t.norm(d_reshaped, dim=1, keepdim=True) + 1e-8
-    return d
 
 
 def cond_entropy(logits):
@@ -191,70 +188,6 @@ def cond_entropy(logits):
     # Use log softmax for stability.
     return - t.sum(probs * t.log_softmax(logits, dim=1)) / probs.shape[0]
 
-
-class VATLoss(nn.Module):
-    # Adapted from https://github.com/lyakaap/VAT-pytorch/blob/master/vat.py
-
-    def __init__(self, xi=10.0, eps=2.0, ip=1):
-        """VAT loss
-        :param xi: hyperparameter of VAT (default: 10.0)
-        :param eps: hyperparameter of VAT (default: 1.0)
-        :param ip: iteration times of computing adv noise (default: 1)
-        """
-        super(VATLoss, self).__init__()
-        self.xi = xi
-        self.eps = eps
-        self.ip = ip
-
-    def forward(self, model, x):
-        with t.no_grad():
-            pred = t.nn.functional.softmax(model.classify(x), dim=1)
-
-        # prepare random unit tensor
-        d = t.rand(x.shape).sub(0.5).to(x.device)
-        d = _l2_normalize(d)
-
-        # calc adversarial direction
-        for _ in range(self.ip):
-            d.requires_grad_()
-            pred_hat = model.classify(x + self.xi * d)
-            logp_hat = t.nn.functional.log_softmax(pred_hat, dim=1)
-            adv_distance = t.nn.functional.kl_div(logp_hat, pred, reduction='batchmean')
-            adv_distance.backward()
-            d = _l2_normalize(d.grad)
-            model.zero_grad()
-
-        # calc LDS
-        r_adv = d * self.eps
-        pred_hat = model.classify(x + r_adv)
-        logp_hat = t.nn.functional.log_softmax(pred_hat, dim=1)
-        lds = t.nn.functional.kl_div(logp_hat, pred, reduction='batchmean')
-
-        return lds
-
-
-class LDSLoss(nn.Module):
-    # Adapted from https://github.com/lyakaap/VAT-pytorch/blob/master/vat.py
-
-    def __init__(self, n_steps):
-        # n_steps = args.label_prop_n_steps
-        super(LDSLoss, self).__init__()
-        self.n_steps = n_steps
-
-    def forward(self, model, x, sample_q, seed_batch):
-        with t.no_grad():
-            pred = t.nn.functional.softmax(model.classify(x), dim=1)
-
-        # get a sample with a certain number of steps
-        # args.label_prop_n_steps
-        samples = sample_q(model, replay_buffer=[], y=pred.argmax(dim=1), n_steps=self.n_steps, seed_batch=seed_batch)
-
-        # calc LDS between prediction on sample and prediction on original
-        pred_hat = model.classify(samples)
-        logp_hat = t.nn.functional.log_softmax(pred_hat, dim=1)
-        lds = t.nn.functional.kl_div(logp_hat, pred, reduction='batchmean')
-
-        return lds
 
 
 def cycle(loader):
@@ -704,26 +637,27 @@ def main(args):
                         # May no longer need class cond samples now
                         # assert args.class_cond_p_x_sample, "need class-conditional samples for psuedo label prop"
                     if args.score_match:
-                        x = x_p_d
-                        x.requires_grad = True
-                        logits_u = f.classify(x)
-                        # p(x) = 1/Z q(x) therefore log(p(x)) + log Z = q(x) which we defined by the generative model as logsumexp
-                        logpx_plus_Z = logits_u.logsumexp(1)
-                        # logpx_plus_Z is log_q, we have the gradient with respect to x, as in the paper, x = ksi
-                        sp = t.autograd.grad(logpx_plus_Z.sum(), x, create_graph=True, retain_graph=True)[0]
-                        # This next part is based on the sliced score matching objective, where we project along random directions
-                        # In this case implicitly we've chosen 1 projection vector
-                        # e is the noise vectors
-                        e = t.randn_like(sp)
-                        sp = sp * e
-                        # gradient of the score, VJP onto the noise e (vectors v_ij)
-                        eH = t.autograd.grad(sp.sum(), x, retain_graph=True)[0]
-                        # eH = t.autograd.grad(sp, x, grad_outputs=e, retain_graph=True)[0]
-                        trH = (eH * e).sum(-1)
-                        # Note the sums and the correspondence with the formula in the paper
-                        sm_loss = trH + .5 * (sp.sum(-1) ** 2)
-                        # Mean represents expectation which is the outer integral
-                        sm_loss = sm_loss.mean()
+                        # x = x_p_d
+                        # x.requires_grad = True
+                        # logits_u = f.classify(x)
+                        # # p(x) = 1/Z q(x) therefore log(p(x)) + log Z = q(x) which we defined by the generative model as logsumexp
+                        # logpx_plus_Z = logits_u.logsumexp(1)
+                        # # logpx_plus_Z is log_q, we have the gradient with respect to x, as in the paper, x = ksi
+                        # sp = t.autograd.grad(logpx_plus_Z.sum(), x, create_graph=True, retain_graph=True)[0]
+                        # # This next part is based on the sliced score matching objective, where we project along random directions
+                        # # In this case implicitly we've chosen 1 projection vector
+                        # # e is the noise vectors
+                        # e = t.randn_like(sp)
+                        # sp = sp * e
+                        # # gradient of the score, VJP onto the noise e (vectors v_ij)
+                        # eH = t.autograd.grad(sp.sum(), x, retain_graph=True)[0]
+                        # # eH = t.autograd.grad(sp, x, grad_outputs=e, retain_graph=True)[0]
+                        # trH = (eH * e).sum(-1)
+                        # # Note the sums and the correspondence with the formula in the paper
+                        # sm_loss = trH + .5 * (sp.sum(-1) ** 2)
+                        # # Mean represents expectation which is the outer integral
+                        # sm_loss = sm_loss.mean()
+                        sm_loss = sliced_score_matching(f, x_p_d, 1)
                         L += args.p_x_weight * sm_loss
                         if cur_iter % args.print_every == 0:
                             print('sm_loss {}:{:>d} = {:>14.9f}'.format(
