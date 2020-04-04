@@ -712,11 +712,16 @@ def main(args):
                         # logpx_plus_Z is log_q, we have the gradient with respect to x, as in the paper, x = ksi
                         sp = t.autograd.grad(logpx_plus_Z.sum(), x, create_graph=True, retain_graph=True)[0]
                         # This next part is based on the sliced score matching objective, where we project along random directions
+                        # In this case implicitly we've chosen 1 projection vector
+                        # e is the noise vectors
                         e = t.randn_like(sp)
-                        eH = t.autograd.grad(sp, x, grad_outputs=e, retain_graph=True)[0]
+                        sp = sp * e
+                        # gradient of the score, VJP onto the noise e (vectors v_ij)
+                        eH = t.autograd.grad(sp.sum(), x, retain_graph=True)[0]
+                        # eH = t.autograd.grad(sp, x, grad_outputs=e, retain_graph=True)[0]
                         trH = (eH * e).sum(-1)
                         # Note the sums and the correspondence with the formula in the paper
-                        sm_loss = trH + .5 * (sp ** 2).sum(-1)
+                        sm_loss = trH + .5 * (sp.sum(-1) ** 2)
                         # Mean represents expectation which is the outer integral
                         sm_loss = sm_loss.mean()
                         L += args.p_x_weight * sm_loss
