@@ -657,7 +657,7 @@ def main(args):
                         # sm_loss = trH + .5 * (sp.sum(-1) ** 2)
                         # # Mean represents expectation which is the outer integral
                         # sm_loss = sm_loss.mean()
-                        sm_loss = sliced_score_matching(f, x_p_d, 1)
+                        sm_loss = sliced_score_matching(f, x_p_d, args.n_sm_vectors)
                         L += args.p_x_weight * sm_loss
                         if cur_iter % args.print_every == 0:
                             print('sm_loss {}:{:>d} = {:>14.9f}'.format(
@@ -894,6 +894,7 @@ if __name__ == "__main__":
     parser.add_argument("--mnist_no_crop", action="store_true", help="Run MNIST without crop")
     parser.add_argument("--score_match", action="store_true", help="Note: so far implemented only for p(x). Use score matching instead of SGLD in training JEM")
     parser.add_argument("--swish", action="store_true", help="Use swish activation on NN instead of ReLU")
+    parser.add_argument("--n_sm_vectors", type=int, default=1, help="Number of vectors for projection with score matching")
 
 
 
