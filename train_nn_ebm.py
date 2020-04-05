@@ -74,6 +74,10 @@ class NeuralNet(nn.Module):
         self.layers = nn.ModuleList()
         self.use_vbnorm = use_vbnorm
 
+        affine = True
+        if args.no_param_bn:
+            affine = False
+
         layer_in = nn.Linear(input_size, hidden_size)
         self.layers.append(layer_in)
         self.ref_x = ref_x
@@ -83,7 +87,7 @@ class NeuralNet(nn.Module):
             # self.layers.append(BatchRenormalizationNN(hidden_size))
             # self.layers.append(BatchRenorm1d(hidden_size))
         elif args.batch_norm:
-            self.layers.append(nn.BatchNorm1d(num_features=hidden_size))
+            self.layers.append(nn.BatchNorm1d(num_features=hidden_size, affine=affine))
         if args.swish:
             self.layers.append(Swish(hidden_size))
         else:
@@ -92,12 +96,13 @@ class NeuralNet(nn.Module):
 
         for i in range(extra_layers):
             self.layers.append(nn.Linear(hidden_size, hidden_size))
-            if use_vbnorm:
-                self.layers.append(VirtualBatchNormNN(hidden_size))
-                # self.layers.append(VirtualBatchNormNN(hidden_size))
-                # self.layers.append(BatchRenorm1d(hidden_size))
-            elif args.batch_norm:
-                self.layers.append(nn.BatchNorm1d(num_features=hidden_size))
+            if not args.first_layer_bn_only:
+                if use_vbnorm:
+                    self.layers.append(VirtualBatchNormNN(hidden_size))
+                    # self.layers.append(VirtualBatchNormNN(hidden_size))
+                    # self.layers.append(BatchRenorm1d(hidden_size))
+                elif args.batch_norm:
+                    self.layers.append(nn.BatchNorm1d(num_features=hidden_size, affine=affine))
             if args.swish:
                 self.layers.append(Swish(hidden_size))
             else:
@@ -683,6 +688,11 @@ def main(args):
                                                                                                            fp - fq))
                         L += args.p_x_weight * l_p_x
 
+                    # if cur_iter % args.print_every == 0:
+                    #     for layer in f.f.layers:
+                    #         if isinstance(layer, nn.BatchNorm1d):
+                    #             print("{} | {}".format(layer.weight.mean(), layer.weight.abs().mean()))
+                    #             print("{} | {}".format(layer.bias.mean(), layer.bias.abs().mean()))
 
                 if args.p_y_given_x_weight > 0:  # maximize log p(y | x)
                     logits = f.classify(x_lab)
@@ -895,6 +905,8 @@ if __name__ == "__main__":
     parser.add_argument("--score_match", action="store_true", help="Note: so far implemented only for p(x). Use score matching instead of SGLD in training JEM")
     parser.add_argument("--swish", action="store_true", help="Use swish activation on NN instead of ReLU")
     parser.add_argument("--n_sm_vectors", type=int, default=1, help="Number of vectors for projection with score matching")
+    parser.add_argument("--no_param_bn", action="store_true", help="No affine transform/learnable BN params")
+    parser.add_argument("--first_layer_bn_only", action="store_true")
 
 
 
