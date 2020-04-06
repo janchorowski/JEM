@@ -256,7 +256,10 @@ def get_model_and_buffer(args, device, sample_q, ref_x=None):
 
 def logit_transform(x, lamb = 0.05):
     # Adapted from https://github.com/yookoon/VLAE
-    x = (x * 255.0 + t.rand_like(x)) / 256.0 # noise
+    # x = (x * 255.0 + t.rand_like(x)) / 256.0 # noise
+    precision = args.dequant_precision
+    assert precision >= 2.0
+    x = (x * (precision - 1) + t.rand_like(x)) / precision # noise for smoothness
     x = lamb + (1 - 2.0 * lamb) * x # clipping to avoid explosion at ends
     x = t.log(x) - t.log(1.0 - x)
     return x
@@ -907,6 +910,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_sm_vectors", type=int, default=1, help="Number of vectors for projection with score matching")
     parser.add_argument("--no_param_bn", action="store_true", help="No affine transform/learnable BN params")
     parser.add_argument("--first_layer_bn_only", action="store_true")
+    parser.add_argument("--dequant_precision", type=float, default=256.0, help="For dequantization/logit transform")
 
 
 
