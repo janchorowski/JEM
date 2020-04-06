@@ -81,7 +81,8 @@ def sliced_score_matching(f, samples, n_particles=1):
     vectors = t.randn_like(dup_samples)
     vectors = vectors / t.norm(vectors, dim=-1, keepdim=True)
 
-    logp = -f.classify(dup_samples).sum()
+    logits = f.classify(dup_samples)
+    logp = logits.logsumexp(1).sum()
     grad1 = t.autograd.grad(logp, dup_samples, create_graph=True)[0]
     gradv = t.sum(grad1 * vectors)
     loss1 = t.sum(grad1 * vectors, dim=-1) ** 2 * 0.5
@@ -100,7 +101,8 @@ def sliced_score_matching_vr(f, samples, n_particles=1):
     dup_samples.requires_grad_(True)
     vectors = t.randn_like(dup_samples)
 
-    logp = -f.classify(dup_samples).sum()
+    logits = f.classify(dup_samples)
+    logp = logits.logsumexp(1).sum()
     grad1 = t.autograd.grad(logp, dup_samples, create_graph=True)[0]
     loss1 = t.sum(grad1 * grad1, dim=-1) / 2.
     gradv = t.sum(grad1 * vectors)
