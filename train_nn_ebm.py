@@ -36,7 +36,8 @@ import matplotlib.pyplot as plt
 from vbnorm import VirtualBatchNormNN
 # from batch_renormalization import BatchRenormalizationNN
 from batchrenorm import BatchRenorm1d
-from losses import VATLoss, LDSLoss, sliced_score_matching_vr, sliced_score_matching
+from losses import VATLoss, LDSLoss, sliced_score_matching_vr, \
+    sliced_score_matching, denoising_score_matching
 
 
 class DataSubset(Dataset):
@@ -670,6 +671,17 @@ def main(args):
                         if cur_iter % args.print_every == 0:
                             print('sm_loss {}:{:>d} = {:>14.9f}'.format(
                                     epoch, i, sm_loss))
+                    elif args.denoising_score_match:
+                        # Multiply by args.denoising_sm_sigma**2 to keep scale of loss
+                        # constant across sigma changes
+                        # See 4.2 in Generative Modeling by Estimating Gradients of the
+                        # Data Distribution (Yang, Ermon 2019)
+                        sm_loss = args.denoising_sm_sigma**2 * denoising_score_matching(f, x_p_d,
+                                                        args.denoising_sm_sigma)
+                        L += args.p_x_weight * sm_loss
+                        if cur_iter % args.print_every == 0:
+                            print('sm_loss {}:{:>d} = {:>14.9f}'.format(
+                                epoch, i, sm_loss))
 
                     else:
                         if args.class_cond_p_x_sample:
@@ -911,8 +923,8 @@ if __name__ == "__main__":
     parser.add_argument("--no_param_bn", action="store_true", help="No affine transform/learnable BN params")
     parser.add_argument("--first_layer_bn_only", action="store_true")
     parser.add_argument("--dequant_precision", type=float, default=256.0, help="For dequantization/logit transform")
-
-
+    parser.add_argument("--denoising_score_match", action="store_true", help="Use denoising score matching to train")
+    parser.add_argument("--denoising_sm_sigma", type=float, default=0.1, help="Noise to add in denoising score matching")
 
 
     args = parser.parse_args()

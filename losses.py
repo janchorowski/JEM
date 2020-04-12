@@ -115,3 +115,22 @@ def sliced_score_matching_vr(f, samples, n_particles=1):
     loss = loss1 + loss2
     return loss.mean()
 
+
+def denoising_score_matching(f, samples, sigma):
+    n_samples = samples.shape[0]
+    orig_samples = samples.clone()
+    orig_samples.requires_grad = True
+    noise = t.randn_like(orig_samples) * sigma
+    corrupted_samples = orig_samples + noise
+
+    logits = f.classify(corrupted_samples)
+    logp = logits.logsumexp(1).sum()
+    score = t.autograd.grad(logp, corrupted_samples, create_graph=True)[0]
+
+    # For Gaussian noise drawn, see eq 9 Vincent Connection Between Score Matching
+    # and Denoising Autoencoders
+    dq_dxtilde = 1 / sigma**2 * (orig_samples - corrupted_samples)
+
+    # Sum across all, then division by num samples creates avg l2 norm
+    loss = 1./2. * t.sum((score - dq_dxtilde)**2) / n_samples
+    return loss
