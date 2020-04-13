@@ -91,6 +91,8 @@ class NeuralNet(nn.Module):
             self.layers.append(nn.BatchNorm1d(num_features=hidden_size, affine=affine))
         if args.swish:
             self.layers.append(Swish(hidden_size))
+        elif args.leaky_relu:
+            self.layers.append(nn.LeakyReLU())
         else:
             self.layers.append(nn.ReLU())
 
@@ -106,12 +108,12 @@ class NeuralNet(nn.Module):
                     self.layers.append(nn.BatchNorm1d(num_features=hidden_size, affine=affine))
             if args.swish:
                 self.layers.append(Swish(hidden_size))
+            elif args.leaky_relu:
+                self.layers.append(nn.LeakyReLU())
             else:
                 self.layers.append(nn.ReLU())
 
         # Note output layer not needed here because it is done in class F
-
-        self.relu = nn.ReLU()
 
 
     def forward(self, x, y=None):
@@ -128,12 +130,10 @@ class NeuralNet(nn.Module):
                 x, _, _ = layer(x, mean, mean_sq)
             elif isinstance(layer, BatchRenorm1d) or isinstance(layer, nn.BatchNorm1d):
                 x = layer(x)
-            else: # now includes ReLU
+            else: # now includes ReLU/activation functions
                 if args.vbnorm:
                     ref_x = layer(ref_x)
-                    # ref_x = self.relu(ref_x)
                 x = layer(x)
-                # x = self.relu(x)
         output = x
         return output
 
@@ -925,6 +925,7 @@ if __name__ == "__main__":
     parser.add_argument("--dequant_precision", type=float, default=256.0, help="For dequantization/logit transform")
     parser.add_argument("--denoising_score_match", action="store_true", help="Use denoising score matching to train")
     parser.add_argument("--denoising_sm_sigma", type=float, default=0.1, help="Noise to add in denoising score matching")
+    parser.add_argument("--leaky_relu", action="store_true", help="Use Leaky ReLU activation on NN instead of ReLU")
 
 
     args = parser.parse_args()
