@@ -586,6 +586,10 @@ def main(args):
             if count == args.n_classes:
                 break
 
+
+    if args.eval_mode_except_clf:
+        f.eval()
+
     for epoch in range(args.n_epochs):
         if epoch in args.decay_epochs:
             for param_group in optim.param_groups:
@@ -608,6 +612,9 @@ def main(args):
 
             if args.vat:
 
+                if args.eval_mode_except_clf:
+                    f.train()
+
                 optim.zero_grad()
                 vat_loss = VATLoss(xi=10.0, eps=args.vat_eps, ip=1)
                 lds = vat_loss(f, x_p_d)
@@ -622,6 +629,9 @@ def main(args):
 
                 loss.backward()
                 optim.step()
+
+                if args.eval_mode_except_clf:
+                    f.eval()
 
                 cur_iter += 1
 
@@ -646,26 +656,6 @@ def main(args):
                         # May no longer need class cond samples now
                         # assert args.class_cond_p_x_sample, "need class-conditional samples for psuedo label prop"
                     if args.score_match:
-                        # x = x_p_d
-                        # x.requires_grad = True
-                        # logits_u = f.classify(x)
-                        # # p(x) = 1/Z q(x) therefore log(p(x)) + log Z = q(x) which we defined by the generative model as logsumexp
-                        # logpx_plus_Z = logits_u.logsumexp(1)
-                        # # logpx_plus_Z is log_q, we have the gradient with respect to x, as in the paper, x = ksi
-                        # sp = t.autograd.grad(logpx_plus_Z.sum(), x, create_graph=True, retain_graph=True)[0]
-                        # # This next part is based on the sliced score matching objective, where we project along random directions
-                        # # In this case implicitly we've chosen 1 projection vector
-                        # # e is the noise vectors
-                        # e = t.randn_like(sp)
-                        # sp = sp * e
-                        # # gradient of the score, VJP onto the noise e (vectors v_ij)
-                        # eH = t.autograd.grad(sp.sum(), x, retain_graph=True)[0]
-                        # # eH = t.autograd.grad(sp, x, grad_outputs=e, retain_graph=True)[0]
-                        # trH = (eH * e).sum(-1)
-                        # # Note the sums and the correspondence with the formula in the paper
-                        # sm_loss = trH + .5 * (sp.sum(-1) ** 2)
-                        # # Mean represents expectation which is the outer integral
-                        # sm_loss = sm_loss.mean()
                         sm_loss = sliced_score_matching(f, x_p_d, args.n_sm_vectors)
                         L += args.p_x_weight * sm_loss
                         if cur_iter % args.print_every == 0:
@@ -703,13 +693,10 @@ def main(args):
                                                                                                            fp - fq))
                         L += args.p_x_weight * l_p_x
 
-                    # if cur_iter % args.print_every == 0:
-                    #     for layer in f.f.layers:
-                    #         if isinstance(layer, nn.BatchNorm1d):
-                    #             print("{} | {}".format(layer.weight.mean(), layer.weight.abs().mean()))
-                    #             print("{} | {}".format(layer.bias.mean(), layer.bias.abs().mean()))
-
                 if args.p_y_given_x_weight > 0:  # maximize log p(y | x)
+                    if args.eval_mode_except_clf:
+                        f.train()
+
                     logits = f.classify(x_lab)
                     l_p_y_given_x = nn.CrossEntropyLoss()(logits, y_lab)
 
@@ -761,6 +748,9 @@ def main(args):
                 optim.zero_grad()
                 L.backward()
                 optim.step()
+
+                if args.eval_mode_except_clf:
+                    f.eval()
 
                 cur_iter += 1
 
@@ -926,6 +916,7 @@ if __name__ == "__main__":
     parser.add_argument("--denoising_score_match", action="store_true", help="Use denoising score matching to train")
     parser.add_argument("--denoising_sm_sigma", type=float, default=0.1, help="Noise to add in denoising score matching")
     parser.add_argument("--leaky_relu", action="store_true", help="Use Leaky ReLU activation on NN instead of ReLU")
+    parser.add_argument("--eval_mode_except_clf", action="store_true", help="Pytorch eval mode on everything except classifier training")
 
 
     args = parser.parse_args()
