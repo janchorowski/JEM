@@ -138,13 +138,53 @@ class NeuralNet(nn.Module):
         return output
 
 
+def conv_lrelu_bn_block(channels, n_units, kernel, padding):
+    return nn.Sequential(
+        nn.Conv2d(channels, n_units, kernel, padding=padding),
+        nn.LeakyReLU(negative_slope=0.1),
+        nn.BatchNorm2d(num_features=n_units)
+    )
+
+
+
+class ConvLarge(nn.Module):
+    def __init__(self):
+        super(ConvLarge, self).__init__()
+        self.layers = nn.Sequential(
+            conv_lrelu_bn_block(args.n_ch, n_units=128, kernel=3, padding=1),
+            conv_lrelu_bn_block(128, 128, kernel=3, padding=1),
+            conv_lrelu_bn_block(128, 128, kernel=3, padding=1),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Dropout2d(p=0.5),
+            conv_lrelu_bn_block(128, 256, kernel=3, padding=1),
+            conv_lrelu_bn_block(256, 256, kernel=3, padding=1),
+            conv_lrelu_bn_block(256, 256, kernel=3, padding=1),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Dropout2d(p=0.5),
+            conv_lrelu_bn_block(256, 512, kernel=3, padding=0),
+            conv_lrelu_bn_block(512, 256, kernel=1, padding=0),
+            conv_lrelu_bn_block(256, 128, kernel=1, padding=0),
+            nn.AvgPool2d(kernel_size=6)
+            # nn.Linear(128, 10) No final linear, done in class F
+        )
+
+    def forward(self, x):
+        out = self.layers(x)
+        out = out.squeeze()
+        return out
+
+
 class F(nn.Module):
-    def __init__(self, depth=28, width=2, norm=None, dropout_rate=0.0, im_sz=32, use_nn=False, input_size=None, n_classes=10, ref_x=None):
+    def __init__(self, depth=28, width=2, norm=None, dropout_rate=0.0, im_sz=32, use_nn=False, input_size=None, n_classes=10, ref_x=None, use_cnn=False):
         if input_size is not None:
             assert use_nn == True #input size is for non-images, ie non-conv.
         super(F, self).__init__()
 
-        if use_nn:
+        if use_cnn:
+            print("Using ConvLarge")
+            self.f = ConvLarge()
+            self.f.last_dim = 128
+        elif use_nn:
             hidden_units = 500
 
             use_vbnorm = False
@@ -176,8 +216,11 @@ class F(nn.Module):
 
 
 class CCF(F):
-    def __init__(self, depth=28, width=2, norm=None, dropout_rate=0.0, im_sz=32, use_nn=False, input_size=None, n_classes=10, ref_x=None):
-        super(CCF, self).__init__(depth, width, norm=norm, dropout_rate=dropout_rate, n_classes=n_classes, im_sz=im_sz, input_size=input_size, use_nn=use_nn, ref_x=ref_x)
+    def __init__(self, depth=28, width=2, norm=None, dropout_rate=0.0, im_sz=32,
+                 use_nn=False, input_size=None, n_classes=10, ref_x=None, use_cnn=False):
+        super(CCF, self).__init__(depth, width, norm=norm, dropout_rate=dropout_rate,
+                                  n_classes=n_classes, im_sz=im_sz, input_size=input_size,
+                                  use_nn=use_nn, ref_x=ref_x, use_cnn=use_cnn)
 
     def forward(self, x, y=None):
         logits = self.classify(x)
@@ -239,7 +282,9 @@ def get_model_and_buffer(args, device, sample_q, ref_x=None):
             args.input_size = 2
     else:
         use_nn=False
-    f = model_cls(args.depth, args.width, args.norm, dropout_rate=args.dropout_rate, n_classes=args.n_classes, im_sz=args.im_sz, input_size=args.input_size, use_nn=use_nn, ref_x=ref_x)
+    f = model_cls(args.depth, args.width, args.norm, dropout_rate=args.dropout_rate,
+                  n_classes=args.n_classes, im_sz=args.im_sz, input_size=args.input_size,
+                  use_nn=use_nn, ref_x=ref_x, use_cnn=args.use_cnn)
     if not args.uncond:
         assert args.buffer_size % args.n_classes == 0, "Buffer size must be divisible by args.n_classes"
     if args.load_path is None:
@@ -791,24 +836,12 @@ def main(args):
                 data = t.Tensor(data)
                 preds = f.classify(data.to(device))
                 preds = preds.argmax(dim=1)
-                # preds = preds.detach().numpy()
-                # print(preds)
                 preds = preds.cpu()
                 data1 = data[preds == 0]
-                # print(data1)
                 plt.scatter(data1[:,0], data1[:,1], c="orange")
                 data2 = data[preds == 1]
-                # print(data2)
                 plt.scatter(data2[:,0], data2[:,1], c="blue")
 
-                # labeled_pts = []
-                # data, labels = dload_train_labeled.__next__()
-                # labeled_pts = data
-                # for i in range(2-1):
-                #     # labeled_pts.append(data)
-                #     data,labels = dload_train_labeled.__next__()
-                #     labeled_pts = np.vstack((labeled_pts, data))
-                # print(labeled_pts)
                 labeled_pts = dset_train_labeled[:][0]
                 labeled_pts_labels = dset_train_labeled[:][1]
                 labeled0 = labeled_pts[labeled_pts_labels == 0]
@@ -904,7 +937,7 @@ if __name__ == "__main__":
     parser.add_argument("--ent_min_weight", type=float, default=0.1)
     parser.add_argument("--vbnorm", action="store_true", help="Run with Virtual Batch Norm")
     parser.add_argument("--vbnorm_batch_size", type=int, default=1000)
-    parser.add_argument("--batch_norm", action="store_true", help="Run with Batch Norm")
+    parser.add_argument("--batch_norm", action="store_true", help="Run with Batch Norm (on NN; CNN has by default)")
     parser.add_argument("--mnist_no_logit_transform", action="store_true", help="Run MNIST without logit transform")
     parser.add_argument("--mnist_no_crop", action="store_true", help="Run MNIST without crop")
     parser.add_argument("--score_match", action="store_true", help="Note: so far implemented only for p(x). Use score matching instead of SGLD in training JEM")
@@ -915,8 +948,9 @@ if __name__ == "__main__":
     parser.add_argument("--dequant_precision", type=float, default=256.0, help="For dequantization/logit transform")
     parser.add_argument("--denoising_score_match", action="store_true", help="Use denoising score matching to train")
     parser.add_argument("--denoising_sm_sigma", type=float, default=0.1, help="Noise to add in denoising score matching")
-    parser.add_argument("--leaky_relu", action="store_true", help="Use Leaky ReLU activation on NN instead of ReLU")
+    parser.add_argument("--leaky_relu", action="store_true", help="Use Leaky ReLU activation on NN instead of ReLU. Note CNN has leaky ReLU by default")
     parser.add_argument("--eval_mode_except_clf", action="store_true", help="Pytorch eval mode on everything except classifier training")
+    parser.add_argument("--use_cnn", action="store_true", help="Use CNN")
 
 
     args = parser.parse_args()
@@ -928,5 +962,6 @@ if __name__ == "__main__":
         args.n_classes = 10
     if args.vat:
         print("Running VAT")
+
 
     main(args)
