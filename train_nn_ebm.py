@@ -515,9 +515,35 @@ def get_sample_q(args, device):
             init_sample, buffer_inds = sample_p_0(replay_buffer, bs=bs, y=y)
         x_k = t.autograd.Variable(init_sample, requires_grad=True)
         # sgld
-        for k in range(n_steps):
-            f_prime = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
-            x_k.data += args.sgld_lr * f_prime + args.sgld_std * t.randn_like(x_k)
+        if args.psgld:
+            V = 0
+            for k in range(n_steps):
+                # grad log like w.r.t inputs x
+                g_bar = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
+                # exponential average of magnitude of gradient
+                V = args.psgld_alpha * V + (1-args.psgld_alpha) * g_bar * g_bar
+                # 1/(1+sqrt(V)) means as V increases, this decreases. Then is a diag matrix
+                # print(V.shape)
+                # print(g_bar.shape)
+                G = t.ones_like(V) / (args.psgld_lambda * t.ones_like(V) + t.sqrt(V))
+                # Problem is G is very large (~50000 or so on average) so this causes instability
+                # what if I scale G down by its average value? This way we still have proportionally
+                # much greater updates in some directions, hopefully without too much instability
+                # I suppose we could just rescale the sgld_lr and sgld_std too...
+                # Or just change the psgld_lambda
+                # print(G.mean())
+                if args.psgld_div_mean:
+                    G /= G.mean()
+                # print(G.max())
+                # print(G.min())
+
+                # Like SGLD here except the gradient is weighted by this G term
+                # which means if magnitude of gradient in a direction is high, the update is less in that direction
+                x_k.data += args.sgld_lr * G * g_bar + args.sgld_std * t.randn_like(x_k) * G
+        else:
+            for k in range(n_steps):
+                f_prime = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
+                x_k.data += args.sgld_lr * f_prime + args.sgld_std * t.randn_like(x_k)
         f.train()
         final_samples = x_k.detach()
         # update replay buffer
@@ -976,6 +1002,11 @@ if __name__ == "__main__":
     parser.add_argument("--eval_mode_except_clf", action="store_true", help="Pytorch eval mode on everything except classifier training")
     parser.add_argument("--use_cnn", action="store_true", help="Use CNN")
     parser.add_argument("--cnn_no_reg", action="store_true", help="No BN or Dropout on CNN architecture")
+    parser.add_argument("--psgld", action="store_true", help="Use Preconditioned SGLD")
+    parser.add_argument("--psgld_alpha", type=float, default=0.99)
+    parser.add_argument("--psgld_lambda", type=float, default=1e-1)
+    parser.add_argument("--psgld_div_mean", action="store_true")
+
 
 
     args = parser.parse_args()
