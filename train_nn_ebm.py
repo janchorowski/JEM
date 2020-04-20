@@ -145,28 +145,52 @@ def conv_lrelu_bn_block(channels, n_units, kernel, padding):
         nn.BatchNorm2d(num_features=n_units)
     )
 
+def conv_lrelu_block(channels, n_units, kernel, padding):
+    return nn.Sequential(
+        nn.Conv2d(channels, n_units, kernel, padding=padding),
+        nn.LeakyReLU(negative_slope=0.1)
+    )
 
 
 class ConvLarge(nn.Module):
+    # Based on VAT paper, what they call "ConvLarge"
     def __init__(self):
         super(ConvLarge, self).__init__()
-        self.layers = nn.Sequential(
-            conv_lrelu_bn_block(args.n_ch, n_units=128, kernel=3, padding=1),
-            conv_lrelu_bn_block(128, 128, kernel=3, padding=1),
-            conv_lrelu_bn_block(128, 128, kernel=3, padding=1),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Dropout2d(p=0.5),
-            conv_lrelu_bn_block(128, 256, kernel=3, padding=1),
-            conv_lrelu_bn_block(256, 256, kernel=3, padding=1),
-            conv_lrelu_bn_block(256, 256, kernel=3, padding=1),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Dropout2d(p=0.5),
-            conv_lrelu_bn_block(256, 512, kernel=3, padding=0),
-            conv_lrelu_bn_block(512, 256, kernel=1, padding=0),
-            conv_lrelu_bn_block(256, 128, kernel=1, padding=0),
-            nn.AvgPool2d(kernel_size=6)
-            # nn.Linear(128, 10) No final linear, done in class F
-        )
+        if args.cnn_no_reg:
+            self.layers = nn.Sequential(
+                conv_lrelu_block(args.n_ch, n_units=128, kernel=3,
+                                    padding=1),
+                conv_lrelu_block(128, 128, kernel=3, padding=1),
+                conv_lrelu_block(128, 128, kernel=3, padding=1),
+                nn.MaxPool2d(kernel_size=2, stride=2),
+                conv_lrelu_block(128, 256, kernel=3, padding=1),
+                conv_lrelu_block(256, 256, kernel=3, padding=1),
+                conv_lrelu_block(256, 256, kernel=3, padding=1),
+                nn.MaxPool2d(kernel_size=2, stride=2),
+                conv_lrelu_block(256, 512, kernel=3, padding=0),
+                conv_lrelu_block(512, 256, kernel=1, padding=0),
+                conv_lrelu_block(256, 128, kernel=1, padding=0),
+                nn.AvgPool2d(kernel_size=6)
+                # nn.Linear(128, 10) No final linear, done in class F
+            )
+        else:
+            self.layers = nn.Sequential(
+                conv_lrelu_bn_block(args.n_ch, n_units=128, kernel=3, padding=1),
+                conv_lrelu_bn_block(128, 128, kernel=3, padding=1),
+                conv_lrelu_bn_block(128, 128, kernel=3, padding=1),
+                nn.MaxPool2d(kernel_size=2, stride=2),
+                nn.Dropout2d(p=0.5),
+                conv_lrelu_bn_block(128, 256, kernel=3, padding=1),
+                conv_lrelu_bn_block(256, 256, kernel=3, padding=1),
+                conv_lrelu_bn_block(256, 256, kernel=3, padding=1),
+                nn.MaxPool2d(kernel_size=2, stride=2),
+                nn.Dropout2d(p=0.5),
+                conv_lrelu_bn_block(256, 512, kernel=3, padding=0),
+                conv_lrelu_bn_block(512, 256, kernel=1, padding=0),
+                conv_lrelu_bn_block(256, 128, kernel=1, padding=0),
+                nn.AvgPool2d(kernel_size=6)
+                # nn.Linear(128, 10) No final linear, done in class F
+            )
 
     def forward(self, x):
         out = self.layers(x)
@@ -951,6 +975,7 @@ if __name__ == "__main__":
     parser.add_argument("--leaky_relu", action="store_true", help="Use Leaky ReLU activation on NN instead of ReLU. Note CNN has leaky ReLU by default")
     parser.add_argument("--eval_mode_except_clf", action="store_true", help="Pytorch eval mode on everything except classifier training")
     parser.add_argument("--use_cnn", action="store_true", help="Use CNN")
+    parser.add_argument("--cnn_no_reg", action="store_true", help="No BN or Dropout on CNN architecture")
 
 
     args = parser.parse_args()
