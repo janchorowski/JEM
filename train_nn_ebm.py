@@ -522,21 +522,15 @@ def get_sample_q(args, device):
                 g_bar = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
                 # exponential average of magnitude of gradient
                 V = args.psgld_alpha * V + (1-args.psgld_alpha) * g_bar * g_bar
-                # 1/(1+sqrt(V)) means as V increases, this decreases. Then is a diag matrix
-                # print(V.shape)
-                # print(g_bar.shape)
+                # 1/(1+sqrt(V)) means as V increases, this decreases.
                 G = t.ones_like(V) / (args.psgld_lambda * t.ones_like(V) + t.sqrt(V))
-                # Problem is G is very large (~50000 or so on average) so this causes instability
+                # Problem is G is very large so this causes instability
                 # what if I scale G down by its average value? This way we still have proportionally
                 # much greater updates in some directions, hopefully without too much instability
                 # I suppose we could just rescale the sgld_lr and sgld_std too...
-                # Or just change the psgld_lambda
-                # print(G.mean())
+                # Or change the psgld_lambda
                 if args.psgld_div_mean:
                     G /= G.mean()
-                # print(G.max())
-                # print(G.min())
-
                 # Like SGLD here except the gradient is weighted by this G term
                 # which means if magnitude of gradient in a direction is high, the update is less in that direction
                 x_k.data += args.sgld_lr * G * g_bar + args.sgld_std * t.randn_like(x_k) * G
