@@ -304,6 +304,7 @@ def init_random(args, bs):
         out = t.FloatTensor(bs, args.n_ch, args.im_sz, args.im_sz).uniform_(-1, 1)
     return out
 
+
 def get_model_and_buffer(args, device, sample_q, ref_x=None):
     model_cls = F if args.uncond else CCF
     args.input_size = None
@@ -329,6 +330,10 @@ def get_model_and_buffer(args, device, sample_q, ref_x=None):
         replay_buffer = ckpt_dict["replay_buffer"]
 
     f = f.to(device)
+
+    if args.optim_sgld:
+        replay_buffer = nn.Parameter(replay_buffer)
+
     return f, replay_buffer
 
 
@@ -509,7 +514,7 @@ def get_sample_q(args, device):
         samples = choose_random * random_samples + (1 - choose_random) * buffer_samples
         return samples.to(device), inds
 
-    def sample_q(f, replay_buffer, y=None, n_steps=args.n_steps, seed_batch=None):
+    def sample_q(f, replay_buffer, y=None, n_steps=args.n_steps, seed_batch=None, optim_sgld=None):
         """this func takes in replay_buffer now so we have the option to sample from
         scratch (i.e. replay_buffer==[]).  See test_wrn_ebm.py for example.
         """
@@ -543,16 +548,31 @@ def get_sample_q(args, device):
                 # which means if magnitude of gradient in a direction is high, the update is less in that direction
                 x_k.data += args.sgld_lr * G * g_bar + args.sgld_std * t.randn_like(x_k) * G
         else:
-            for k in range(n_steps):
-                f_prime = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
-                x_k.data += args.sgld_lr * f_prime + args.sgld_std * t.randn_like(x_k)
+            if args.optim_sgld:
+                assert optim_sgld is not None
+                replay_buffer[buffer_inds].data = init_sample
+                for k in range(n_steps):
+                    optim_sgld.zero_grad()
+                    loss = - f(replay_buffer[buffer_inds].to(device), y=y).sum()
+                    loss.backward()
+                    optim_sgld.step()
+                x_k = replay_buffer[buffer_inds].to(device)
+                # TODO probably refactor for clarity, final_samples = replay_buffer[buffer_inds]...
+                # Below instead of final_samples = x_k.detach()
+            else:
+                for k in range(n_steps):
+                    f_prime = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
+                    x_k.data += args.sgld_lr * f_prime + args.sgld_std * t.randn_like(x_k)
         f.train()
         final_samples = x_k.detach()
         # update replay buffer
         if seed_batch is None:
             # Just detaching functionality for now
             if len(replay_buffer) > 0:
-                replay_buffer[buffer_inds] = final_samples.cpu()
+                if args.optim_sgld:
+                    replay_buffer[buffer_inds].data = final_samples.cpu()
+                else:
+                    replay_buffer[buffer_inds] = final_samples.cpu()
         return final_samples
 
     return sample_q
@@ -664,6 +684,14 @@ def main(args):
     else:
         optim = t.optim.SGD(params, lr=args.lr, momentum=.9, weight_decay=args.weight_decay)
 
+    optim_sgld = None
+    if args.optim_sgld:
+        # TODO other optimizers
+        # optim_sgld = t.optim.SGD(params, lr=args.lr, momentum=.9, weight_decay=args.weight_decay)
+        # This SGD optimizer is basically SGLD with 0 noise
+        optim_sgld = t.optim.SGD([replay_buffer], lr=args.sgld_lr, momentum=args.optim_sgld_momentum)
+
+
     best_valid_acc = 0.0
     cur_iter = 0
 
@@ -774,10 +802,10 @@ def main(args):
                         if args.class_cond_p_x_sample:
                             assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
                             y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
-                            x_q = sample_q(f, replay_buffer, y=y_q)
+                            x_q = sample_q(f, replay_buffer, y=y_q, optim_sgld=optim_sgld)
 
                         else:
-                            x_q = sample_q(f, replay_buffer)  # sample from log-sumexp
+                            x_q = sample_q(f, replay_buffer, optim_sgld=optim_sgld)  # sample from log-sumexp
 
                         fp_all = f(x_p_d)
                         fq_all = f(x_q)
@@ -816,7 +844,7 @@ def main(args):
 
                 if args.p_x_y_weight > 0:  # maximize log p(x, y)
                     assert not args.uncond, "this objective can only be trained for class-conditional EBM DUUUUUUUUHHHH!!!"
-                    x_q_lab = sample_q(f, replay_buffer, y=y_lab)
+                    x_q_lab = sample_q(f, replay_buffer, y=y_lab, optim_sgld=optim_sgld)
                     fp, fq = f(x_lab, y_lab).mean(), f(x_q_lab, y_lab).mean()
                     l_p_x_y = -(fp - fq)
                     if cur_iter % args.print_every == 0:
@@ -856,13 +884,13 @@ def main(args):
                         if args.class_cond_p_x_sample:
                             assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
                             y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
-                            x_q = sample_q(f, replay_buffer, y=y_q)
+                            x_q = sample_q(f, replay_buffer, y=y_q, optim_sgld=optim_sgld)
                         else:
-                            x_q = sample_q(f, replay_buffer)
+                            x_q = sample_q(f, replay_buffer, optim_sgld=optim_sgld)
                         plot('{}/x_q_{}_{:>06d}.png'.format(args.save_dir, epoch, i), x_q)
                     if args.plot_cond:  # generate class-conditional samples
                         y = t.arange(0, args.n_classes)[None].repeat(args.n_classes, 1).transpose(1, 0).contiguous().view(-1).to(device)
-                        x_q_y = sample_q(f, replay_buffer, y=y)
+                        x_q_y = sample_q(f, replay_buffer, y=y, optim_sgld=optim_sgld)
                         plot('{}/x_q_y{}_{:>06d}.png'.format(args.save_dir, epoch, i), x_q_y)
 
         if epoch % args.ckpt_every == 0:
@@ -1009,6 +1037,8 @@ if __name__ == "__main__":
     parser.add_argument("--psgld_alpha", type=float, default=0.99)
     parser.add_argument("--psgld_lambda", type=float, default=1e-1)
     parser.add_argument("--psgld_div_mean", action="store_true")
+    parser.add_argument("--optim_sgld", action="store_true", help="Use SGLD Optimizer")
+    parser.add_argument("--optim_sgld_momentum", type=float, default=0.0)
 
 
 
