@@ -550,21 +550,36 @@ def get_sample_q(args, device):
         else:
             if args.optim_sgld:
                 assert optim_sgld is not None
-                replay_buffer[buffer_inds].data = init_sample
+                # replay_buffer[buffer_inds].data = init_sample.data
+                replay_buffer[buffer_inds].data = t.clone(init_sample)
+                print(t.sum(t.abs(replay_buffer[buffer_inds].data.to(device) - init_sample.data)))
+                # replay_buffer[buffer_inds].data = replay_buffer[buffer_inds].data.to(device)
+                # replay_buffer[buffer_inds].data = init_sample
+                # print(replay_buffer[buffer_inds].data.to(device))
+                # print(init_sample)
+                # print(t.sum(t.abs(x_k - init_sample)))
+                # print(t.sum(x_k - replay_buffer[buffer_inds].to(device)))
                 for k in range(n_steps):
                     optim_sgld.zero_grad()
                     loss = - f(replay_buffer[buffer_inds].to(device), y=y).sum()
                     loss.backward()
                     optim_sgld.step()
-                x_k = replay_buffer[buffer_inds].to(device)
-                # TODO probably refactor for clarity, final_samples = replay_buffer[buffer_inds]...
-                # Below instead of final_samples = x_k.detach()
+                # x_k = replay_buffer[buffer_inds].to(device)
+                # TODO TEST ONLY REMOVE
+                # for k in range(n_steps):
+                #     f_prime = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
+                #     x_k.data += args.sgld_lr * f_prime
+                # print(t.sum(t.abs(x_k - replay_buffer[buffer_inds].to(device))))
             else:
+                # Original SGLD we had
                 for k in range(n_steps):
                     f_prime = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
                     x_k.data += args.sgld_lr * f_prime + args.sgld_std * t.randn_like(x_k)
         f.train()
-        final_samples = x_k.detach()
+        if args.optim_sgld:
+            final_samples = replay_buffer[buffer_inds].to(device).detach()
+        else:
+            final_samples = x_k.detach()
         # update replay buffer
         if seed_batch is None:
             # Just detaching functionality for now
@@ -687,7 +702,6 @@ def main(args):
     optim_sgld = None
     if args.optim_sgld:
         # TODO other optimizers
-        # optim_sgld = t.optim.SGD(params, lr=args.lr, momentum=.9, weight_decay=args.weight_decay)
         # This SGD optimizer is basically SGLD with 0 noise
         optim_sgld = t.optim.SGD([replay_buffer], lr=args.sgld_lr, momentum=args.optim_sgld_momentum)
 
@@ -732,6 +746,10 @@ def main(args):
             x_p_d = x_p_d.to(device)
             x_lab, y_lab = dload_train_labeled.__next__()
             x_lab, y_lab = x_lab.to(device), y_lab.to(device)
+
+            seed_batch = None
+            if args.use_cd:
+                seed_batch = x_p_d
 
             L = 0.
 
@@ -802,10 +820,10 @@ def main(args):
                         if args.class_cond_p_x_sample:
                             assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
                             y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
-                            x_q = sample_q(f, replay_buffer, y=y_q, optim_sgld=optim_sgld)
+                            x_q = sample_q(f, replay_buffer, y=y_q, optim_sgld=optim_sgld, seed_batch=seed_batch)
 
                         else:
-                            x_q = sample_q(f, replay_buffer, optim_sgld=optim_sgld)  # sample from log-sumexp
+                            x_q = sample_q(f, replay_buffer, optim_sgld=optim_sgld, seed_batch=seed_batch)  # sample from log-sumexp
 
                         fp_all = f(x_p_d)
                         fq_all = f(x_q)
@@ -844,7 +862,7 @@ def main(args):
 
                 if args.p_x_y_weight > 0:  # maximize log p(x, y)
                     assert not args.uncond, "this objective can only be trained for class-conditional EBM DUUUUUUUUHHHH!!!"
-                    x_q_lab = sample_q(f, replay_buffer, y=y_lab, optim_sgld=optim_sgld)
+                    x_q_lab = sample_q(f, replay_buffer, y=y_lab, optim_sgld=optim_sgld, seed_batch=seed_batch)
                     fp, fq = f(x_lab, y_lab).mean(), f(x_q_lab, y_lab).mean()
                     l_p_x_y = -(fp - fq)
                     if cur_iter % args.print_every == 0:
@@ -884,13 +902,13 @@ def main(args):
                         if args.class_cond_p_x_sample:
                             assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
                             y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
-                            x_q = sample_q(f, replay_buffer, y=y_q, optim_sgld=optim_sgld)
+                            x_q = sample_q(f, replay_buffer, y=y_q, optim_sgld=optim_sgld, seed_batch=seed_batch)
                         else:
-                            x_q = sample_q(f, replay_buffer, optim_sgld=optim_sgld)
+                            x_q = sample_q(f, replay_buffer, optim_sgld=optim_sgld, seed_batch=seed_batch)
                         plot('{}/x_q_{}_{:>06d}.png'.format(args.save_dir, epoch, i), x_q)
                     if args.plot_cond:  # generate class-conditional samples
                         y = t.arange(0, args.n_classes)[None].repeat(args.n_classes, 1).transpose(1, 0).contiguous().view(-1).to(device)
-                        x_q_y = sample_q(f, replay_buffer, y=y, optim_sgld=optim_sgld)
+                        x_q_y = sample_q(f, replay_buffer, y=y, optim_sgld=optim_sgld, seed_batch=seed_batch)
                         plot('{}/x_q_y{}_{:>06d}.png'.format(args.save_dir, epoch, i), x_q_y)
 
         if epoch % args.ckpt_every == 0:
@@ -1039,6 +1057,7 @@ if __name__ == "__main__":
     parser.add_argument("--psgld_div_mean", action="store_true")
     parser.add_argument("--optim_sgld", action="store_true", help="Use SGLD Optimizer")
     parser.add_argument("--optim_sgld_momentum", type=float, default=0.0)
+    parser.add_argument("--use_cd", action="store_true", help="Use contrastive divergence instead of persistent contrastive divergence (initialize from data instead of saved replay buffer/previous samples")
 
 
 
