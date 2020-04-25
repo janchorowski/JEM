@@ -350,13 +350,23 @@ def logit_transform(x, lamb = 0.05):
 
 def get_data(args):
     if args.dataset == "svhn":
-        transform_train = tr.Compose(
-            [tr.Pad(4, padding_mode="reflect"),
-             tr.RandomCrop(args.im_sz),
-             tr.ToTensor(),
-             tr.Normalize((.5, .5, .5), (.5, .5, .5)),
-             lambda x: x + args.sigma * t.randn_like(x)]
-        )
+        if args.svhn_logit_transform:
+            transform_train = tr.Compose(
+                [tr.Pad(4),
+                 tr.RandomCrop(args.im_sz),
+                 tr.ToTensor(),
+                 logit_transform,
+                 lambda x: x + args.sigma * t.randn_like(x)
+                 ]
+            )
+        else:
+            transform_train = tr.Compose(
+                [tr.Pad(4, padding_mode="reflect"),
+                 tr.RandomCrop(args.im_sz),
+                 tr.ToTensor(),
+                 tr.Normalize((.5, .5, .5), (.5, .5, .5)),
+                 lambda x: x + args.sigma * t.randn_like(x)]
+            )
     elif args.dataset == "mnist":
         if args.mnist_no_logit_transform:
             transform_train = tr.Compose(
@@ -738,6 +748,8 @@ def main(args):
 
 
         for i, (x_p_d, _) in tqdm(enumerate(dload_train)):
+            print(x_p_d.max())
+            print(x_p_d.min())
             if cur_iter <= args.warmup_iters:
                 lr = args.lr * cur_iter / float(args.warmup_iters)
                 for param_group in optim.param_groups:
@@ -1058,6 +1070,7 @@ if __name__ == "__main__":
     parser.add_argument("--optim_sgld", action="store_true", help="Use SGLD Optimizer")
     parser.add_argument("--optim_sgld_momentum", type=float, default=0.0)
     parser.add_argument("--use_cd", action="store_true", help="Use contrastive divergence instead of persistent contrastive divergence (initialize from data instead of saved replay buffer/previous samples")
+    parser.add_argument("--svhn_logit_transform", action="store_true", help="Run SVHN with logit transform")
 
 
 
