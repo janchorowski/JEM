@@ -748,8 +748,6 @@ def main(args):
 
 
         for i, (x_p_d, _) in tqdm(enumerate(dload_train)):
-            print(x_p_d.max())
-            print(x_p_d.min())
             if cur_iter <= args.warmup_iters:
                 lr = args.lr * cur_iter / float(args.warmup_iters)
                 for param_group in optim.param_groups:
