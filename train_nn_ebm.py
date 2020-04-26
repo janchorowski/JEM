@@ -337,6 +337,14 @@ def get_model_and_buffer(args, device, sample_q, ref_x=None):
     return f, replay_buffer
 
 
+def get_model_and_buffer_with_momentum(args, device, sample_q, ref_x=None):
+    f, replay_buffer = get_model_and_buffer(args, device, sample_q, ref_x)
+    momentum_buffer = t.zeros_like(replay_buffer)
+    return f, replay_buffer, momentum_buffer
+
+
+
+
 def logit_transform(x, lamb = 0.05):
     # Adapted from https://github.com/yookoon/VLAE
     # x = (x * 255.0 + t.rand_like(x)) / 256.0 # noise
@@ -506,7 +514,7 @@ def get_data(args):
 
 
 def get_sample_q(args, device):
-    def sample_p_0(replay_buffer, bs, y=None):
+    def sample_p_0(replay_buffer, bs, y=None, momentum_buffer=None):
         if len(replay_buffer) == 0:
             return init_random(args, bs), []
         buffer_size = len(replay_buffer) if y is None else len(replay_buffer) // args.n_classes
@@ -522,9 +530,12 @@ def get_sample_q(args, device):
         else:
             choose_random = (t.rand(bs) < args.reinit_freq).float()[:, None, None, None]
         samples = choose_random * random_samples + (1 - choose_random) * buffer_samples
+        if momentum_buffer is not None:
+            momentum_buffer[inds] *= (1-choose_random) # Reset momentum to 0 when resetting data, keep as before if choosing buffer sample
         return samples.to(device), inds
 
-    def sample_q(f, replay_buffer, y=None, n_steps=args.n_steps, seed_batch=None, optim_sgld=None):
+    def sample_q(f, replay_buffer, y=None, n_steps=args.n_steps, seed_batch=None,
+                 optim_sgld=None, momentum_buffer=None):
         """this func takes in replay_buffer now so we have the option to sample from
         scratch (i.e. replay_buffer==[]).  See test_wrn_ebm.py for example.
         """
@@ -535,63 +546,74 @@ def get_sample_q(args, device):
         if seed_batch is not None:
             init_sample, buffer_inds = seed_batch, []
         else:
-            init_sample, buffer_inds = sample_p_0(replay_buffer, bs=bs, y=y)
+            init_sample, buffer_inds = sample_p_0(replay_buffer, bs=bs, y=y, momentum_buffer=momentum_buffer)
         x_k = t.autograd.Variable(init_sample, requires_grad=True)
         # sgld
-        if args.psgld:
-            V = 0
-            for k in range(n_steps):
-                # grad log like w.r.t inputs x
-                g_bar = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
-                # exponential average of magnitude of gradient
-                V = args.psgld_alpha * V + (1-args.psgld_alpha) * g_bar * g_bar
-                # 1/(1+sqrt(V)) means as V increases, this decreases.
-                G = t.ones_like(V) / (args.psgld_lambda * t.ones_like(V) + t.sqrt(V))
-                # Problem is G is very large so this causes instability
-                # what if I scale G down by its average value? This way we still have proportionally
-                # much greater updates in some directions, hopefully without too much instability
-                # I suppose we could just rescale the sgld_lr and sgld_std too...
-                # Or change the psgld_lambda
-                if args.psgld_div_mean:
-                    G /= G.mean()
-                # Like SGLD here except the gradient is weighted by this G term
-                # which means if magnitude of gradient in a direction is high, the update is less in that direction
-                x_k.data += args.sgld_lr * G * g_bar + args.sgld_std * t.randn_like(x_k) * G
-        else:
-            if args.optim_sgld:
-                assert optim_sgld is not None
-                # replay_buffer[buffer_inds].data = init_sample.data
-                replay_buffer[buffer_inds].data = t.clone(init_sample)
-                print(t.sum(t.abs(replay_buffer[buffer_inds].data.to(device) - init_sample.data)))
-                # replay_buffer[buffer_inds].data = replay_buffer[buffer_inds].data.to(device)
-                # replay_buffer[buffer_inds].data = init_sample
-                # print(replay_buffer[buffer_inds].data.to(device))
-                # print(init_sample)
-                # print(t.sum(t.abs(x_k - init_sample)))
-                # print(t.sum(x_k - replay_buffer[buffer_inds].to(device)))
-                for k in range(n_steps):
-                    optim_sgld.zero_grad()
-                    loss = - f(replay_buffer[buffer_inds].to(device), y=y).sum()
-                    loss.backward()
-                    optim_sgld.step()
-                # x_k = replay_buffer[buffer_inds].to(device)
-                # TODO TEST ONLY REMOVE
-                # for k in range(n_steps):
-                #     f_prime = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
-                #     x_k.data += args.sgld_lr * f_prime
-                # print(t.sum(t.abs(x_k - replay_buffer[buffer_inds].to(device))))
+        # if args.psgld:
+        #     V = 0
+        #     for k in range(n_steps):
+        #         # grad log like w.r.t inputs x
+        #         g_bar = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
+        #         # exponential average of magnitude of gradient
+        #         V = args.psgld_alpha * V + (1-args.psgld_alpha) * g_bar * g_bar
+        #         # 1/(1+sqrt(V)) means as V increases, this decreases.
+        #         G = t.ones_like(V) / (args.psgld_lambda * t.ones_like(V) + t.sqrt(V))
+        #         # Problem is G is very large so this causes instability
+        #         # what if I scale G down by its average value? This way we still have proportionally
+        #         # much greater updates in some directions, hopefully without too much instability
+        #         # I suppose we could just rescale the sgld_lr and sgld_std too...
+        #         # Or change the psgld_lambda
+        #         if args.psgld_div_mean:
+        #             G /= G.mean()
+        #         # Like SGLD here except the gradient is weighted by this G term
+        #         # which means if magnitude of gradient in a direction is high, the update is less in that direction
+        #         x_k.data += args.sgld_lr * G * g_bar + args.sgld_std * t.randn_like(x_k) * G
+        # else:
+        #     if args.optim_sgld:
+        #         assert optim_sgld is not None
+        #         # replay_buffer[buffer_inds].data = init_sample.data
+        #         replay_buffer[buffer_inds].data = t.clone(init_sample)
+        #         print(t.sum(t.abs(replay_buffer[buffer_inds].data.to(device) - init_sample.data)))
+        #         # replay_buffer[buffer_inds].data = replay_buffer[buffer_inds].data.to(device)
+        #         # replay_buffer[buffer_inds].data = init_sample
+        #         # print(replay_buffer[buffer_inds].data.to(device))
+        #         # print(init_sample)
+        #         # print(t.sum(t.abs(x_k - init_sample)))
+        #         # print(t.sum(x_k - replay_buffer[buffer_inds].to(device)))
+        #         for k in range(n_steps):
+        #             optim_sgld.zero_grad()
+        #             loss = - f(replay_buffer[buffer_inds].to(device), y=y).sum()
+        #             loss.backward()
+        #             optim_sgld.step()
+        #     else:
+        # Original SGLD we had
+        if momentum_buffer is not None:
+            momentum = momentum_buffer[buffer_inds].to(device)
+        for k in range(n_steps):
+            f_prime = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
+            # x_k.data += args.sgld_lr * f_prime + args.sgld_std * t.randn_like(x_k)
+            if momentum_buffer is not None:
+                # momentum_buffer[buffer_inds] = (args.sgld_momentum * momentum_buffer[buffer_inds]
+                #                             + f_prime)
+                # x_k.data += args.sgld_lr * momentum_buffer[buffer_inds]
+                momentum = (args.sgld_momentum * momentum + f_prime)
+                x_k.data += args.sgld_lr * momentum
+                # No noise with momentum right now but can do so if we want by
+                # unindenting the line 3 lines below
             else:
-                # Original SGLD we had
-                for k in range(n_steps):
-                    f_prime = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
-                    x_k.data += args.sgld_lr * f_prime + args.sgld_std * t.randn_like(x_k)
+                x_k.data += args.sgld_lr * f_prime
+                x_k.data += args.sgld_std * t.randn_like(x_k)
+
         f.train()
         if args.optim_sgld:
             final_samples = replay_buffer[buffer_inds].to(device).detach()
         else:
             final_samples = x_k.detach()
+        if momentum_buffer is not None:
+            momentum_buffer[buffer_inds] = momentum.cpu()
         # update replay buffer
         if seed_batch is None:
+            # Only update replay buffer in PCD (CD = use seed batch at data)
             # Just detaching functionality for now
             if len(replay_buffer) > 0:
                 if args.optim_sgld:
@@ -697,7 +719,12 @@ def main(args):
         ref_x = next(iter(dload_train_vbnorm))[0].to(device)
 
     sample_q = get_sample_q(args, device)
-    f, replay_buffer = get_model_and_buffer(args, device, sample_q, ref_x)
+
+    momentum_buffer = None
+    if args.use_sgld_momentum:
+        f, replay_buffer, momentum_buffer = get_model_and_buffer_with_momentum(args, device, sample_q, ref_x)
+    else:
+        f, replay_buffer = get_model_and_buffer(args, device, sample_q, ref_x)
 
     sqrt = lambda x: int(t.sqrt(t.Tensor([x])))
     plot = lambda p, x: tv.utils.save_image(t.clamp(x, -1, 1), p, normalize=True, nrow=sqrt(x.size(0)))
@@ -830,10 +857,10 @@ def main(args):
                         if args.class_cond_p_x_sample:
                             assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
                             y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
-                            x_q = sample_q(f, replay_buffer, y=y_q, optim_sgld=optim_sgld, seed_batch=seed_batch)
+                            x_q = sample_q(f, replay_buffer, y=y_q, optim_sgld=optim_sgld, seed_batch=seed_batch, momentum_buffer=momentum_buffer)
 
                         else:
-                            x_q = sample_q(f, replay_buffer, optim_sgld=optim_sgld, seed_batch=seed_batch)  # sample from log-sumexp
+                            x_q = sample_q(f, replay_buffer, optim_sgld=optim_sgld, seed_batch=seed_batch, momentum_buffer=momentum_buffer)  # sample from log-sumexp
 
                         fp_all = f(x_p_d)
                         fq_all = f(x_q)
@@ -872,7 +899,7 @@ def main(args):
 
                 if args.p_x_y_weight > 0:  # maximize log p(x, y)
                     assert not args.uncond, "this objective can only be trained for class-conditional EBM DUUUUUUUUHHHH!!!"
-                    x_q_lab = sample_q(f, replay_buffer, y=y_lab, optim_sgld=optim_sgld, seed_batch=seed_batch)
+                    x_q_lab = sample_q(f, replay_buffer, y=y_lab, optim_sgld=optim_sgld, seed_batch=seed_batch, momentum_buffer=momentum_buffer)
                     fp, fq = f(x_lab, y_lab).mean(), f(x_q_lab, y_lab).mean()
                     l_p_x_y = -(fp - fq)
                     if cur_iter % args.print_every == 0:
@@ -912,13 +939,13 @@ def main(args):
                         if args.class_cond_p_x_sample:
                             assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
                             y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
-                            x_q = sample_q(f, replay_buffer, y=y_q, optim_sgld=optim_sgld, seed_batch=seed_batch)
+                            x_q = sample_q(f, replay_buffer, y=y_q, optim_sgld=optim_sgld, seed_batch=seed_batch, momentum_buffer=momentum_buffer)
                         else:
-                            x_q = sample_q(f, replay_buffer, optim_sgld=optim_sgld, seed_batch=seed_batch)
+                            x_q = sample_q(f, replay_buffer, optim_sgld=optim_sgld, seed_batch=seed_batch, momentum_buffer=momentum_buffer)
                         plot('{}/x_q_{}_{:>06d}.png'.format(args.save_dir, epoch, i), x_q)
                     if args.plot_cond:  # generate class-conditional samples
                         y = t.arange(0, args.n_classes)[None].repeat(args.n_classes, 1).transpose(1, 0).contiguous().view(-1).to(device)
-                        x_q_y = sample_q(f, replay_buffer, y=y, optim_sgld=optim_sgld, seed_batch=seed_batch)
+                        x_q_y = sample_q(f, replay_buffer, y=y, optim_sgld=optim_sgld, seed_batch=seed_batch, momentum_buffer=momentum_buffer)
                         plot('{}/x_q_y{}_{:>06d}.png'.format(args.save_dir, epoch, i), x_q_y)
 
         if epoch % args.ckpt_every == 0:
@@ -1069,6 +1096,8 @@ if __name__ == "__main__":
     parser.add_argument("--optim_sgld_momentum", type=float, default=0.0)
     parser.add_argument("--use_cd", action="store_true", help="Use contrastive divergence instead of persistent contrastive divergence (initialize from data instead of saved replay buffer/previous samples")
     parser.add_argument("--svhn_logit_transform", action="store_true", help="Run SVHN with logit transform")
+    parser.add_argument("--use_sgld_momentum", action="store_true")
+    parser.add_argument("--sgld_momentum", type=float, default=0.9)
 
 
 
