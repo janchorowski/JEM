@@ -154,7 +154,7 @@ def conv_lrelu_block(channels, n_units, kernel, padding):
 
 class ConvLarge(nn.Module):
     # Based on VAT paper, what they call "ConvLarge"
-    def __init__(self):
+    def __init__(self, avg_pool_kernel=6):
         super(ConvLarge, self).__init__()
         self.layers = nn.ModuleList()
         if args.cnn_no_bn:
@@ -195,7 +195,7 @@ class ConvLarge(nn.Module):
                 conv_lrelu_bn_block(512, 256, kernel=1, padding=0))
             self.layers.append(
                 conv_lrelu_bn_block(256, 128, kernel=1, padding=0))
-        self.layers.append(nn.AvgPool2d(kernel_size=6))
+        self.layers.append(nn.AvgPool2d(kernel_size=avg_pool_kernel))
         # nn.Linear(128, 10) No final linear, done in class F
 
         self.layers = nn.Sequential(*self.layers)
@@ -214,7 +214,7 @@ class F(nn.Module):
 
         if use_cnn:
             print("Using ConvLarge")
-            self.f = ConvLarge()
+            self.f = ConvLarge(avg_pool_kernel=args.cnn_avg_pool_kernel)
             self.f.last_dim = 128
         elif use_nn:
             hidden_units = 500
@@ -591,11 +591,20 @@ def get_sample_q(args, device):
             momentum = momentum_buffer[buffer_inds].to(device)
         for k in range(n_steps):
             f_prime = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
+            # Note f_prime is log sum exp whereas our energy function is neg log sum exp
+            # So the reason our steps were positive before was it was minus a negative
+            neg_f_prime = -f_prime
+            # This negative f prime is the gradient of the energy function, which we are taking steps
+            # in descent with respect to.
             # x_k.data += args.sgld_lr * f_prime + args.sgld_std * t.randn_like(x_k)
             if momentum_buffer is not None:
                 # momentum_buffer[buffer_inds] = (args.sgld_momentum * momentum_buffer[buffer_inds]
                 #                             + f_prime)
                 # x_k.data += args.sgld_lr * momentum_buffer[buffer_inds]
+                # momentum = (args.sgld_momentum * momentum + neg_f_prime)
+                # x_k.data -= args.sgld_lr * momentum
+                # Nah that's the same. Negative first then subtract the accumulated negatives
+                # vs positive first then add all the accumulated positives.
                 momentum = (args.sgld_momentum * momentum + f_prime)
                 x_k.data += args.sgld_lr * momentum
                 # No noise with momentum right now but can do so if we want by
@@ -1098,6 +1107,7 @@ if __name__ == "__main__":
     parser.add_argument("--svhn_logit_transform", action="store_true", help="Run SVHN with logit transform")
     parser.add_argument("--use_sgld_momentum", action="store_true")
     parser.add_argument("--sgld_momentum", type=float, default=0.9)
+    parser.add_argument("--cnn_avg_pool_kernel", type=int, default=6)
 
 
 
