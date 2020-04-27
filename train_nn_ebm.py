@@ -591,6 +591,7 @@ def get_sample_q(args, device):
             momentum = momentum_buffer[buffer_inds].to(device)
         for k in range(n_steps):
             f_prime = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
+            # print(t.sum(t.abs(f_prime)))
             # Note f_prime is log sum exp whereas our energy function is neg log sum exp
             # So the reason our steps were positive before was it was minus a negative
             neg_f_prime = -f_prime
@@ -598,19 +599,22 @@ def get_sample_q(args, device):
             # in descent with respect to.
             # x_k.data += args.sgld_lr * f_prime + args.sgld_std * t.randn_like(x_k)
             if momentum_buffer is not None:
-                # momentum_buffer[buffer_inds] = (args.sgld_momentum * momentum_buffer[buffer_inds]
-                #                             + f_prime)
-                # x_k.data += args.sgld_lr * momentum_buffer[buffer_inds]
-                # momentum = (args.sgld_momentum * momentum + neg_f_prime)
-                # x_k.data -= args.sgld_lr * momentum
-                # Nah that's the same. Negative first then subtract the accumulated negatives
-                # vs positive first then add all the accumulated positives.
-                momentum = (args.sgld_momentum * momentum + f_prime)
+                # Modification to usual momentum to "conserve energy" which should help for sampling
+                momentum = (args.sgld_momentum * momentum + (1-args.sgld_momentum) * f_prime)
                 x_k.data += args.sgld_lr * momentum
                 # No noise with momentum right now but can do so if we want by
                 # unindenting the line 3 lines below
             else:
+                # old = x_k.data + 0.0 # +0.0 breaks a reference, so it's now a copy instead of a reference
+                # new = x_k.data + args.sgld_lr * f_prime
                 x_k.data += args.sgld_lr * f_prime
+                # print("---")
+                # print(args.sgld_lr * f_prime)
+                # print(x_k.data)
+                # new2 = x_k.data
+                # print(t.sum(t.abs(args.sgld_lr * f_prime)))
+                # print(t.sum(t.abs(old)-t.abs(new)))
+                # print(t.sum(t.abs(old)-t.abs(new2)))
                 x_k.data += args.sgld_std * t.randn_like(x_k)
 
         f.train()
@@ -620,6 +624,7 @@ def get_sample_q(args, device):
             final_samples = x_k.detach()
         if momentum_buffer is not None:
             momentum_buffer[buffer_inds] = momentum.cpu()
+
         # update replay buffer
         if seed_batch is None:
             # Only update replay buffer in PCD (CD = use seed batch at data)
@@ -795,7 +800,9 @@ def main(args):
 
             seed_batch = None
             if args.use_cd:
-                seed_batch = x_p_d
+                seed_batch = x_p_d.clone() # breaks reference so that we don't change
+                # x_p_d at the same time, important for the f = fp - fq calculation
+                # to be non-zero
 
             L = 0.
 
@@ -875,6 +882,10 @@ def main(args):
                         fq_all = f(x_q)
                         fp = fp_all.mean()
                         fq = fq_all.mean()
+
+                        # print(t.sum(t.abs(x_q) - t.abs(x_p_d)))
+                        # print(t.sum(t.abs(f(x_q)) - t.abs(f(x_p_d))))
+                        # print(fp-fq)
 
                         l_p_x = -(fp - fq)
                         if cur_iter % args.print_every == 0:
