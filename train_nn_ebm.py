@@ -308,13 +308,11 @@ def init_random(args, bs):
 def get_model_and_buffer(args, device, sample_q, ref_x=None):
     model_cls = F if args.uncond else CCF
     args.input_size = None
-    if args.dataset == "mnist" or args.dataset == "moons":
-        use_nn=True
+    use_nn = args.use_nn
+    # if args.dataset == "mnist" or args.dataset == "moons":
         # use_nn=False # testing only
-        if args.dataset == "moons":
-            args.input_size = 2
-    else:
-        use_nn=False
+    if args.dataset == "moons":
+        args.input_size = 2
     f = model_cls(args.depth, args.width, args.norm, dropout_rate=args.dropout_rate,
                   n_classes=args.n_classes, im_sz=args.im_sz, input_size=args.input_size,
                   use_nn=use_nn, ref_x=ref_x, use_cnn=args.use_cnn)
@@ -1119,6 +1117,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_sgld_momentum", action="store_true")
     parser.add_argument("--sgld_momentum", type=float, default=0.9)
     parser.add_argument("--cnn_avg_pool_kernel", type=int, default=6)
+    parser.add_argument("--use_nn", action="store_true", help="Use NN (4 layer MLP)")
 
 
 
