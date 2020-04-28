@@ -238,7 +238,7 @@ class F(nn.Module):
                 self.f = NeuralNet(input_size, hidden_units, extra_layers=2, use_vbnorm=use_vbnorm, ref_x=ref_x, n_channels_in=args.n_ch)
             self.f.last_dim = hidden_units
         else:
-            self.f = wideresnet.Wide_ResNet(depth, width, norm=norm, dropout_rate=dropout_rate)
+            self.f = wideresnet.Wide_ResNet(depth, width, norm=norm, dropout_rate=dropout_rate, input_channels=args.n_ch)
 
         self.energy_output = nn.Linear(self.f.last_dim, 1)
         self.class_output = nn.Linear(self.f.last_dim, n_classes)
