@@ -70,18 +70,21 @@ class Swish(nn.Module):
 
 
 class NeuralNet(nn.Module):
-    def __init__(self, input_size, hidden_size, extra_layers=2, use_vbnorm=False, ref_x=None):
+    def __init__(self, input_size, hidden_size, extra_layers=2, use_vbnorm=False, ref_x=None, n_channels_in=1):
         super(NeuralNet, self).__init__()
         self.layers = nn.ModuleList()
         self.use_vbnorm = use_vbnorm
+
+        self.n_channels_in = n_channels_in
 
         affine = True
         if args.no_param_bn:
             affine = False
 
-        layer_in = nn.Linear(input_size, hidden_size)
+        layer_in = nn.Linear(input_size * n_channels_in, hidden_size)
         self.layers.append(layer_in)
         self.ref_x = ref_x
+
         if use_vbnorm:
             assert ref_x is not None
             self.layers.append(VirtualBatchNormNN(hidden_size))
@@ -120,9 +123,15 @@ class NeuralNet(nn.Module):
         if args.vbnorm:
             ref_x = self.ref_x
             if len(ref_x.shape) > 2:
-                ref_x = ref_x.reshape(-1, x.shape[-1]**2)
+                if self.n_channels_in > 1:
+                    ref_x = ref_x.reshape(-1, ref_x.shape[-1] ** 2 * self.n_channels_in)
+                else:
+                    ref_x = ref_x.reshape(-1, ref_x.shape[-1]**2)
         if len(x.shape) > 2:
-            x = x.reshape(-1, x.shape[-1]**2)
+            if self.n_channels_in > 1:
+                x = x.reshape(-1, x.shape[-1]**2 * self.n_channels_in)
+            else:
+                x = x.reshape(-1, x.shape[-1]**2)
         for layer in self.layers:
             if isinstance(layer, VirtualBatchNormNN):
                 assert ref_x is not None
@@ -224,9 +233,9 @@ class F(nn.Module):
                 use_vbnorm = True
 
             if input_size is None:
-                self.f = NeuralNet(im_sz**2, hidden_units, extra_layers=2, use_vbnorm=use_vbnorm, ref_x=ref_x)
+                self.f = NeuralNet(im_sz**2, hidden_units, extra_layers=2, use_vbnorm=use_vbnorm, ref_x=ref_x, n_channels_in=args.n_ch)
             else:
-                self.f = NeuralNet(input_size, hidden_units, extra_layers=2, use_vbnorm=use_vbnorm, ref_x=ref_x)
+                self.f = NeuralNet(input_size, hidden_units, extra_layers=2, use_vbnorm=use_vbnorm, ref_x=ref_x, n_channels_in=args.n_ch)
             self.f.last_dim = hidden_units
         else:
             self.f = wideresnet.Wide_ResNet(depth, width, norm=norm, dropout_rate=dropout_rate)
