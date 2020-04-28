@@ -85,6 +85,7 @@ class Wide_ResNet(nn.Module):
         self.sum_pool = sum_pool
         self.norm = norm
         self.lrelu = nn.LeakyReLU(leak)
+        self.input_channels = input_channels
 
         assert ((depth-4)%6 ==0), 'Wide-resnet depth should be 6n+4'
         n = (depth-4)//6
@@ -120,6 +121,9 @@ class Wide_ResNet(nn.Module):
         if self.sum_pool:
             out = out.view(out.size(0), out.size(1), -1).sum(2)
         else:
-            out = F.avg_pool2d(out, 8)
+            if self.input_channels == 1:
+                out = F.avg_pool2d(out, 7)
+            else:
+                out = F.avg_pool2d(out, 8)
         out = out.view(out.size(0), -1)
         return out
