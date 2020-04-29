@@ -4,7 +4,9 @@ import torch.nn as nn
 import torch.utils
 import torch.distributions as distributions
 from torch.utils.data import DataLoader, Dataset, TensorDataset
-import sklearn.datasets as datasets
+from torchvision import datasets, transforms
+import torchvision
+import sklearn.datasets as skdatasets
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 import matplotlib
 matplotlib.use("Agg")
@@ -15,36 +17,74 @@ TOY_DSETS = ("moons", "circles", "8gaussians", "pinwheel", "2spirals", "checkerb
 
 def main(args):
     utils.makedirs(args.save_dir)
-    logp_net = nn.Sequential(
-        nn.utils.weight_norm(nn.Linear(args.data_dim, args.h_dim)),
-        nn.LeakyReLU(.2),
-        nn.utils.weight_norm(nn.Linear(args.h_dim, args.h_dim)),
-        nn.LeakyReLU(.2),
-        nn.Linear(args.h_dim, 1)
-    )
-    logp_fn = lambda x: logp_net(x)# - (x * x).flatten(start_dim=1).sum(1)/10
-    class G(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.generator = nn.Sequential(
-                nn.Linear(args.noise_dim, args.h_dim, bias=False),
-                nn.BatchNorm1d(args.h_dim, affine=True),
-                nn.ReLU(),
-                nn.Linear(args.h_dim, args.h_dim, bias=False),
-                nn.BatchNorm1d(args.h_dim, affine=True),
-                nn.ReLU(),
-                nn.Linear(args.h_dim, args.data_dim)
-            )
-            self.logsigma = nn.Parameter(torch.zeros(1,))
+    if args.dataset in TOY_DSETS:
+        logp_net = nn.Sequential(
+            nn.utils.weight_norm(nn.Linear(args.data_dim, args.h_dim)),
+            nn.LeakyReLU(.2),
+            nn.utils.weight_norm(nn.Linear(args.h_dim, args.h_dim)),
+            nn.LeakyReLU(.2),
+            nn.Linear(args.h_dim, 1)
+        )
+        logp_fn = lambda x: logp_net(x)# - (x * x).flatten(start_dim=1).sum(1)/10
+        class G(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.generator = nn.Sequential(
+                    nn.Linear(args.noise_dim, args.h_dim, bias=False),
+                    nn.BatchNorm1d(args.h_dim, affine=True),
+                    nn.ReLU(),
+                    nn.Linear(args.h_dim, args.h_dim, bias=False),
+                    nn.BatchNorm1d(args.h_dim, affine=True),
+                    nn.ReLU(),
+                    nn.Linear(args.h_dim, args.data_dim)
+                )
+                self.logsigma = nn.Parameter(torch.zeros(1,))
+    else:
+        logp_net = nn.Sequential(
+            nn.utils.weight_norm(nn.Linear(args.data_dim, 1000)),
+            nn.LeakyReLU(.2),
+            nn.utils.weight_norm(nn.Linear(1000, 500)),
+            nn.LeakyReLU(.2),
+            nn.utils.weight_norm(nn.Linear(500, 500)),
+            nn.LeakyReLU(.2),
+            nn.utils.weight_norm(nn.Linear(500, 250)),
+            nn.LeakyReLU(.2),
+            nn.utils.weight_norm(nn.Linear(250, 250)),
+            nn.LeakyReLU(.2),
+            nn.utils.weight_norm(nn.Linear(250, 250)),
+            nn.LeakyReLU(.2),
+            nn.Linear(250, 1)
+        )
+        logp_fn = lambda x: logp_net(x)  # - (x * x).flatten(start_dim=1).sum(1)/10
+
+        class G(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.generator = nn.Sequential(
+                    nn.Linear(args.noise_dim, 500, bias=False),
+                    nn.BatchNorm1d(500, affine=True),
+                    nn.Softplus(),
+                    nn.Linear(500, 500, bias=False),
+                    nn.BatchNorm1d(500, affine=True),
+                    nn.Softplus(),
+                    nn.Linear(500, args.data_dim),
+                    nn.Sigmoid()
+                )
+                # self.logsigma = nn.Parameter(torch.zeros(1, )-5)
+                self.logsigma = nn.Parameter((torch.ones(1,) * (args.sgld_step * 2)**.5).log(), requires_grad=False)
+
 
     g = G()
 
     params = list(logp_net.parameters()) + list(g.parameters())
 
-    #optimizer = torch.optim.Adam(params, lr=args.lr, betas=[.5, .9], weight_decay=args.weight_decay)
-    optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.Adam(params, lr=args.lr, betas=[.0, .9], weight_decay=args.weight_decay)
+    #optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.weight_decay)
 
     train_loader, test_loader = get_data(args)
+
+    sqrt = lambda x: int(torch.sqrt(torch.Tensor([x])))
+    plot = lambda p, x: torchvision.utils.save_image(torch.clamp(x, 0, 1), p, normalize=False, nrow=sqrt(x.size(0)))
 
     def sample_q(n):
         h = torch.randn((n, args.noise_dim)).to(device)
@@ -106,7 +146,7 @@ def main(args):
             logp_obj = (logp_fn(x_d) - logp_fn(x.detach()))[:, 0].mean()
             logq_obj = logq_unnorm(x.detach(), h.detach()).mean()
 
-            loss = -(logp_obj + logq_obj)
+            loss = -(3 * logp_obj + logq_obj) + 3 * args.p_control * (logp_fn(x_d) ** 2).mean()
             loss.backward()
             optimizer.step()
 
@@ -115,35 +155,35 @@ def main(args):
                     itr, logp_obj.item(), logq_obj.item(), g.logsigma.exp().item()))
 
             if itr % args.viz_every == 0:
-                plt.clf()
-                xm = x.cpu().numpy()
-                xn = x_d.cpu().numpy()
-                xi = x_init.detach().cpu().numpy()
-                ax = plt.subplot(1, 5, 1, aspect="equal", title='refined')
-                ax.scatter(xm[:, 0], xm[:, 1], s=1)
-                #plt.xlim(-2, 2)
-                #plt.ylim(-2, 2)
-                ax = plt.subplot(1, 5, 2, aspect="equal", title='initial')
-                ax.scatter(xi[:, 0], xi[:, 1], s=1)
-                #plt.xlim(-2, 2)
-                #plt.ylim(-2, 2)
-                ax = plt.subplot(1, 5, 3, aspect="equal", title='data')
-                ax.scatter(xn[:, 0], xn[:, 1], s=1)
-                #plt.xlim(-2, 2)
-                #plt.ylim(-2, 2)
+                if args.dataset in TOY_DSETS:
+                    plt.clf()
+                    xm = x.cpu().numpy()
+                    xn = x_d.cpu().numpy()
+                    xi = x_init.detach().cpu().numpy()
+                    ax = plt.subplot(1, 5, 1, aspect="equal", title='refined')
+                    ax.scatter(xm[:, 0], xm[:, 1], s=1)
 
+                    ax = plt.subplot(1, 5, 2, aspect="equal", title='initial')
+                    ax.scatter(xi[:, 0], xi[:, 1], s=1)
 
-                ax = plt.subplot(1, 5, 4, aspect="equal")
-                logp_net.cpu()
-                utils.plt_flow_density(logp_fn, ax, low=x_d.min().item(), high=x_d.max().item())
-                plt.savefig("/{}/{}.png".format(args.save_dir, itr))
-                logp_net.to(device)
+                    ax = plt.subplot(1, 5, 3, aspect="equal", title='data')
+                    ax.scatter(xn[:, 0], xn[:, 1], s=1)
 
-                ax = plt.subplot(1, 5, 5, aspect="equal")
-                logp_net.cpu()
-                utils.plt_flow_density(logp_fn, ax, low=x_d.min().item(), high=x_d.max().item(), exp=False)
-                plt.savefig("/{}/{}.png".format(args.save_dir, itr))
-                logp_net.to(device)
+                    ax = plt.subplot(1, 5, 4, aspect="equal")
+                    logp_net.cpu()
+                    utils.plt_flow_density(logp_fn, ax, low=x_d.min().item(), high=x_d.max().item())
+                    plt.savefig("/{}/{}.png".format(args.save_dir, itr))
+                    logp_net.to(device)
+
+                    ax = plt.subplot(1, 5, 5, aspect="equal")
+                    logp_net.cpu()
+                    utils.plt_flow_density(logp_fn, ax, low=x_d.min().item(), high=x_d.max().item(), exp=False)
+                    plt.savefig("/{}/{}.png".format(args.save_dir, itr))
+                    logp_net.to(device)
+                else:
+                    plot("{}/init_{}.png".format(args.save_dir, itr), x_init.view(x_init.size(0), *args.data_size))
+                    plot("{}/ref_{}.png".format(args.save_dir, itr), x.view(x.size(0), *args.data_size))
+                    plot("{}/data_{}.png".format(args.save_dir, itr), x_d.view(x_d.size(0), *args.data_size))
 
             itr += 1
 
@@ -151,12 +191,22 @@ def main(args):
 
 def get_data(args):
     if args.dataset in TOY_DSETS:
-        data, labels = datasets.make_moons(n_samples=10000, noise=.2)
+        data, labels = skdatasets.make_moons(n_samples=10000, noise=.2)
         data = torch.from_numpy(data).float()
         labels = torch.from_numpy(labels).long()
         dset = TensorDataset(data, labels)
         dload = DataLoader(dset, args.batch_size, True, drop_last=True)
         return dload, dload
+    elif args.dataset == "mnist":
+        tr_dataset = datasets.MNIST("./data",
+                                    transform=transforms.Compose([transforms.ToTensor(), lambda x: x.view(-1)]),
+                                    download=True)
+        te_dataset = datasets.MNIST("./data", train=False,
+                                    transform=transforms.Compose([transforms.ToTensor(), lambda x: x.view(-1)]),
+                                    download=True)
+        tr_dload = DataLoader(tr_dataset, args.batch_size, True, drop_last=True)
+        te_dload = DataLoader(te_dataset, args.batch_size, False)
+        return tr_dload, te_dload
     else:
         raise NotImplementedError
 
@@ -186,6 +236,7 @@ if __name__ == "__main__":
     parser.add_argument("--p_y_given_x_weight", type=float, default=1.)
     # regularization
     parser.add_argument("--weight_decay", type=float, default=0.0)
+    parser.add_argument("--p_control", type=float, default=0.0)
     # EBM specific
     parser.add_argument("--n_steps", type=int, default=10,
                         help="number of steps of SGLD per iteration, 100 works for short-run, 20 works for PCD")
@@ -205,6 +256,7 @@ if __name__ == "__main__":
     if args.dataset in TOY_DSETS:
         args.data_dim = 2
     elif args.dataset == "mnist":
-        args.data_di = 784
+        args.data_dim = 784
+        args.data_size = (1, 28, 28)
 
     main(args)
