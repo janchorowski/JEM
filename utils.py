@@ -16,6 +16,7 @@
 import os
 import logging
 import torch
+import numpy as np
 
 
 def makedirs(dirname):
@@ -109,3 +110,23 @@ def save_checkpoint(state, save, epoch):
 
 def isnan(tensor):
     return (tensor != tensor)
+
+
+def plt_flow_density(logdensity, ax, npts=100, memory=100, title="$q(x)$", device="cpu", low=-4, high=4):
+    side = np.linspace(low, high, npts)
+    xx, yy = np.meshgrid(side, side)
+    x = np.hstack([xx.reshape(-1, 1), yy.reshape(-1, 1)])
+
+    x = torch.from_numpy(x).type(torch.float32).to(device)
+
+    logpx = logdensity(x)[:, 0]
+    logpx = logpx - logpx.max()
+
+    px = np.exp(logpx.cpu().detach().numpy()).reshape(npts, npts)
+    #print(low, high, px.min(), px.max())
+    px = px / px.sum()
+
+    ax.imshow(px)
+    ax.get_xaxis().set_ticks([])
+    ax.get_yaxis().set_ticks([])
+    ax.set_title(title)
