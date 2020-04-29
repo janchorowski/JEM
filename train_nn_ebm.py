@@ -538,7 +538,7 @@ def get_sample_q(args, device):
             choose_random = (t.rand(bs) < args.reinit_freq).float()[:, None, None, None]
         if args.buffer_reinit_from_data:
             assert data is not None
-            samples = choose_random * data.to(device) + (1 - choose_random) * buffer_samples.to(device)
+            samples = choose_random * data.cpu() + (1 - choose_random) * buffer_samples
         else:
             samples = choose_random * random_samples + (1 - choose_random) * buffer_samples
         if momentum_buffer is not None:
