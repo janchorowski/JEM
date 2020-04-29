@@ -6,11 +6,15 @@ import torch.distributions as distributions
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 import sklearn.datasets as datasets
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import utils
-
+import toy_data
+TOY_DSETS = ("moons", "circles", "8gaussians", "pinwheel", "2spirals", "checkerboard", "rings", "swissroll")
 
 def main(args):
+    utils.makedirs(args.save_dir)
     logp_net = nn.Sequential(
         nn.utils.weight_norm(nn.Linear(args.data_dim, args.h_dim)),
         nn.LeakyReLU(.2),
@@ -18,37 +22,41 @@ def main(args):
         nn.LeakyReLU(.2),
         nn.Linear(args.h_dim, 1)
     )
-    logp_fn = lambda x: logp_net(x)# - (x * x).flatten(start_dim=1).sum(1)
+    logp_fn = lambda x: logp_net(x)# - (x * x).flatten(start_dim=1).sum(1)/10
+    class G(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.generator = nn.Sequential(
+                nn.Linear(args.noise_dim, args.h_dim, bias=False),
+                nn.BatchNorm1d(args.h_dim, affine=True),
+                nn.ReLU(),
+                nn.Linear(args.h_dim, args.h_dim, bias=False),
+                nn.BatchNorm1d(args.h_dim, affine=True),
+                nn.ReLU(),
+                nn.Linear(args.h_dim, args.data_dim)
+            )
+            self.logsigma = nn.Parameter(torch.zeros(1,))
 
-    generator = nn.Sequential(
-        nn.Linear(args.noise_dim, args.h_dim),
-        nn.BatchNorm1d(args.h_dim),
-        nn.ReLU(),
-        nn.Linear(args.h_dim, args.h_dim),
-        nn.BatchNorm1d(args.h_dim),
-        nn.ReLU(),
-        nn.Linear(args.h_dim, args.data_dim)
-    )
-    logsigma = nn.Parameter(torch.zeros(1,))
+    g = G()
 
-    params = list(logp_net.parameters()) + list(generator.parameters()) + [logsigma]
+    params = list(logp_net.parameters()) + list(g.parameters())
 
-    optimizer = torch.optim.Adam(params, lr=args.lr, betas=[.5, .9], weight_decay=args.weight_decay)
+    #optimizer = torch.optim.Adam(params, lr=args.lr, betas=[.5, .9], weight_decay=args.weight_decay)
+    optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.weight_decay)
 
     train_loader, test_loader = get_data(args)
 
     def sample_q(n):
         h = torch.randn((n, args.noise_dim)).to(device)
-        x_mu = generator(h)
-        x = x_mu + torch.randn_like(x_mu) * logsigma.exp()
+        x_mu = g.generator(h)
+        x = x_mu + torch.randn_like(x_mu) * g.logsigma.exp()
         return x, h
 
     def logq_unnorm(x, h):
         logph = distributions.Normal(0, 1).log_prob(h).sum(1)
-        px_given_h = distributions.Normal(generator(h), logsigma.exp())
+        px_given_h = distributions.Normal(g.generator(h), g.logsigma.exp())
         logpx_given_h = px_given_h.log_prob(x).sum(1)
         return logpx_given_h + logph
-
 
     def refine_q(x_init, h_init, n_steps, sgld_step):
         x_k = torch.clone(x_init).requires_grad_()
@@ -66,6 +74,7 @@ def main(args):
             logq_tilde = logq_unnorm(x_k, h_tilde)
             logq = logq_unnorm(x_k, h_k)
             g_x = torch.autograd.grad(logp.sum() + logq.sum() - logq_tilde.sum(), [x_k], retain_graph=True)[0]
+            #g_x = torch.autograd.grad(logp.sum(), [x_k], retain_graph=True)[0]
             # x update
             x_k = x_k + g_x * sgld_step + torch.randn_like(x_k) * sgld_sigma
             x_k = x_k.detach().requires_grad_()
@@ -76,11 +85,20 @@ def main(args):
 
         return x_k.detach(), h_k.detach()
 
+    g.train()
+    g.to(device)
+    logp_net.to(device)
+
     itr = 0
     for epoch in range(args.n_epochs):
         for x_d, _ in train_loader:
             optimizer.zero_grad()
-            x_d = x_d.to(device)
+            if args.dataset in TOY_DSETS:
+                x_d = toy_data.inf_train_gen(args.dataset, batch_size=args.batch_size)
+                x_d = torch.from_numpy(x_d).float().to(device)
+            else:
+                x_d = x_d.to(device)
+
 
             x_init, h_init = sample_q(args.batch_size)
             x, h = refine_q(x_init, h_init, args.n_steps, args.sgld_step)
@@ -94,45 +112,46 @@ def main(args):
 
             if itr % args.print_every == 0:
                 print("({}) | log p obj = {:.4f}, log q obj = {:.4f}, sigma = {:.4f}".format(
-                    itr, logp_obj.item(), logq_obj.item(), logsigma.exp().item()))
+                    itr, logp_obj.item(), logq_obj.item(), g.logsigma.exp().item()))
 
             if itr % args.viz_every == 0:
                 plt.clf()
                 xm = x.cpu().numpy()
                 xn = x_d.cpu().numpy()
                 xi = x_init.detach().cpu().numpy()
-                ax = plt.subplot(1, 4, 1, aspect="equal", title='refined')
-                ax.scatter(xm[:, 0], xm[:, 1])
-                plt.xlim(-2, 2)
-                plt.ylim(-2, 2)
-                ax = plt.subplot(1, 4, 2, aspect="equal", title='initial')
-                ax.scatter(xi[:, 0], xi[:, 1])
-                plt.xlim(-2, 2)
-                plt.ylim(-2, 2)
-                ax = plt.subplot(1, 4, 3, aspect="equal", title='data')
-                ax.scatter(xn[:, 0], xn[:, 1])
-                plt.xlim(-2, 2)
-                plt.ylim(-2, 2)
+                ax = plt.subplot(1, 5, 1, aspect="equal", title='refined')
+                ax.scatter(xm[:, 0], xm[:, 1], s=1)
+                #plt.xlim(-2, 2)
+                #plt.ylim(-2, 2)
+                ax = plt.subplot(1, 5, 2, aspect="equal", title='initial')
+                ax.scatter(xi[:, 0], xi[:, 1], s=1)
+                #plt.xlim(-2, 2)
+                #plt.ylim(-2, 2)
+                ax = plt.subplot(1, 5, 3, aspect="equal", title='data')
+                ax.scatter(xn[:, 0], xn[:, 1], s=1)
+                #plt.xlim(-2, 2)
+                #plt.ylim(-2, 2)
 
 
-                ax = plt.subplot(1, 4, 4, aspect="equal")
-                utils.plt_flow_density(logp_fn, ax, low=-2, high=2)
-                plt.savefig("/tmp/{}.png".format(itr))
+                ax = plt.subplot(1, 5, 4, aspect="equal")
+                logp_net.cpu()
+                utils.plt_flow_density(logp_fn, ax, low=x_d.min().item(), high=x_d.max().item())
+                plt.savefig("/{}/{}.png".format(args.save_dir, itr))
+                logp_net.to(device)
+
+                ax = plt.subplot(1, 5, 5, aspect="equal")
+                logp_net.cpu()
+                utils.plt_flow_density(logp_fn, ax, low=x_d.min().item(), high=x_d.max().item(), exp=False)
+                plt.savefig("/{}/{}.png".format(args.save_dir, itr))
+                logp_net.to(device)
 
             itr += 1
 
 
 
 def get_data(args):
-    if args.dataset == "moons":
-        data, labels = datasets.make_moons(n_samples=10000, noise=.1)
-        data = torch.from_numpy(data).float()
-        labels = torch.from_numpy(labels).long()
-        dset = TensorDataset(data, labels)
-        dload = DataLoader(dset, args.batch_size, True, drop_last=True)
-        return dload, dload
-    if args.dataset == "circles":
-        data, labels = datasets.make_circles(n_samples=10000, noise=.1)
+    if args.dataset in TOY_DSETS:
+        data, labels = datasets.make_moons(n_samples=10000, noise=.2)
         data = torch.from_numpy(data).float()
         labels = torch.from_numpy(labels).long()
         dset = TensorDataset(data, labels)
@@ -147,7 +166,7 @@ def get_data(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Energy Based Models and Shit")
     #cifar
-    parser.add_argument("--dataset", type=str, default="moons", choices=["mnist", "moons", "circles"])
+    parser.add_argument("--dataset", type=str, default="circles")#, choices=["mnist", "moons", "circles"])
     parser.add_argument("--data_root", type=str, default="../data")
     # optimization
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -172,7 +191,7 @@ if __name__ == "__main__":
                         help="number of steps of SGLD per iteration, 100 works for short-run, 20 works for PCD")
     parser.add_argument("--sgld_step", type=float, default=.01)
     # logging + evaluation
-    parser.add_argument("--save_dir", type=str, default='./experiment')
+    parser.add_argument("--save_dir", type=str, default='/tmp/')
     parser.add_argument("--ckpt_every", type=int, default=10, help="Epochs between checkpoint save")
     parser.add_argument("--eval_every", type=int, default=1, help="Epochs between evaluation")
     parser.add_argument("--print_every", type=int, default=20, help="Iterations between print")
@@ -183,7 +202,7 @@ if __name__ == "__main__":
     parser.add_argument("--vat", action="store_true", help="Run VAT instead of JEM")
 
     args = parser.parse_args()
-    if args.dataset == "moons" or args.dataset == "circles":
+    if args.dataset in TOY_DSETS:
         args.data_dim = 2
     elif args.dataset == "mnist":
         args.data_di = 784
