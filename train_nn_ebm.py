@@ -521,7 +521,7 @@ def get_data(args):
 
 
 def get_sample_q(args, device):
-    def sample_p_0(replay_buffer, bs, y=None, momentum_buffer=None):
+    def sample_p_0(replay_buffer, bs, y=None, momentum_buffer=None, data=None):
         if len(replay_buffer) == 0:
             return init_random(args, bs), []
         buffer_size = len(replay_buffer) if y is None else len(replay_buffer) // args.n_classes
@@ -536,13 +536,17 @@ def get_sample_q(args, device):
             choose_random = (t.rand(bs) < args.reinit_freq).float()[:, None]
         else:
             choose_random = (t.rand(bs) < args.reinit_freq).float()[:, None, None, None]
-        samples = choose_random * random_samples + (1 - choose_random) * buffer_samples
+        if args.buffer_reinit_from_data:
+            assert data is not None
+            samples = choose_random * data + (1 - choose_random) * buffer_samples
+        else:
+            samples = choose_random * random_samples + (1 - choose_random) * buffer_samples
         if momentum_buffer is not None:
             momentum_buffer[inds] *= (1-choose_random) # Reset momentum to 0 when resetting data, keep as before if choosing buffer sample
         return samples.to(device), inds
 
     def sample_q(f, replay_buffer, y=None, n_steps=args.n_steps, seed_batch=None,
-                 optim_sgld=None, momentum_buffer=None):
+                 optim_sgld=None, momentum_buffer=None, data=None):
         """this func takes in replay_buffer now so we have the option to sample from
         scratch (i.e. replay_buffer==[]).  See test_wrn_ebm.py for example.
         """
@@ -553,7 +557,8 @@ def get_sample_q(args, device):
         if seed_batch is not None:
             init_sample, buffer_inds = seed_batch, []
         else:
-            init_sample, buffer_inds = sample_p_0(replay_buffer, bs=bs, y=y, momentum_buffer=momentum_buffer)
+            init_sample, buffer_inds = sample_p_0(replay_buffer, bs=bs, y=y,
+                                                  momentum_buffer=momentum_buffer, data=data)
         x_k = t.autograd.Variable(init_sample, requires_grad=True)
         # sgld
         # if args.psgld:
@@ -880,10 +885,12 @@ def main(args):
                         if args.class_cond_p_x_sample:
                             assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
                             y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
-                            x_q = sample_q(f, replay_buffer, y=y_q, optim_sgld=optim_sgld, seed_batch=seed_batch, momentum_buffer=momentum_buffer)
+                            x_q = sample_q(f, replay_buffer, y=y_q, optim_sgld=optim_sgld,
+                                           seed_batch=seed_batch, momentum_buffer=momentum_buffer, data=x_p_d)
 
                         else:
-                            x_q = sample_q(f, replay_buffer, optim_sgld=optim_sgld, seed_batch=seed_batch, momentum_buffer=momentum_buffer)  # sample from log-sumexp
+                            x_q = sample_q(f, replay_buffer, optim_sgld=optim_sgld,
+                                           seed_batch=seed_batch, momentum_buffer=momentum_buffer, data=x_p_d)  # sample from log-sumexp
 
                         fp_all = f(x_p_d)
                         fq_all = f(x_q)
@@ -926,7 +933,8 @@ def main(args):
 
                 if args.p_x_y_weight > 0:  # maximize log p(x, y)
                     assert not args.uncond, "this objective can only be trained for class-conditional EBM DUUUUUUUUHHHH!!!"
-                    x_q_lab = sample_q(f, replay_buffer, y=y_lab, optim_sgld=optim_sgld, seed_batch=seed_batch, momentum_buffer=momentum_buffer)
+                    x_q_lab = sample_q(f, replay_buffer, y=y_lab, optim_sgld=optim_sgld,
+                                       seed_batch=seed_batch, momentum_buffer=momentum_buffer, data=x_p_d)
                     fp, fq = f(x_lab, y_lab).mean(), f(x_q_lab, y_lab).mean()
                     l_p_x_y = -(fp - fq)
                     if cur_iter % args.print_every == 0:
@@ -966,13 +974,16 @@ def main(args):
                         if args.class_cond_p_x_sample:
                             assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
                             y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
-                            x_q = sample_q(f, replay_buffer, y=y_q, optim_sgld=optim_sgld, seed_batch=seed_batch, momentum_buffer=momentum_buffer)
+                            x_q = sample_q(f, replay_buffer, y=y_q, optim_sgld=optim_sgld,
+                                           seed_batch=seed_batch, momentum_buffer=momentum_buffer, data=x_p_d)
                         else:
-                            x_q = sample_q(f, replay_buffer, optim_sgld=optim_sgld, seed_batch=seed_batch, momentum_buffer=momentum_buffer)
+                            x_q = sample_q(f, replay_buffer, optim_sgld=optim_sgld,
+                                           seed_batch=seed_batch, momentum_buffer=momentum_buffer, data=x_p_d)
                         plot('{}/x_q_{}_{:>06d}.png'.format(args.save_dir, epoch, i), x_q)
                     if args.plot_cond:  # generate class-conditional samples
                         y = t.arange(0, args.n_classes)[None].repeat(args.n_classes, 1).transpose(1, 0).contiguous().view(-1).to(device)
-                        x_q_y = sample_q(f, replay_buffer, y=y, optim_sgld=optim_sgld, seed_batch=seed_batch, momentum_buffer=momentum_buffer)
+                        x_q_y = sample_q(f, replay_buffer, y=y, optim_sgld=optim_sgld,
+                                         seed_batch=seed_batch, momentum_buffer=momentum_buffer, data=x_p_d)
                         plot('{}/x_q_y{}_{:>06d}.png'.format(args.save_dir, epoch, i), x_q_y)
 
         if epoch % args.ckpt_every == 0:
@@ -1127,6 +1138,7 @@ if __name__ == "__main__":
     parser.add_argument("--sgld_momentum", type=float, default=0.9)
     parser.add_argument("--cnn_avg_pool_kernel", type=int, default=6)
     parser.add_argument("--use_nn", action="store_true", help="Use NN (4 layer MLP)")
+    parser.add_argument("--buffer_reinit_from_data", action="store_true", help="For PCD replay buffer, reinitialize from data points rather than random points")
 
 
 
