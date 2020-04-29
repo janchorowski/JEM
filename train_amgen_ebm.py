@@ -12,9 +12,9 @@ import utils
 
 def main(args):
     logp_net = nn.Sequential(
-        nn.Linear(args.data_dim, args.h_dim),
+        nn.utils.weight_norm(nn.Linear(args.data_dim, args.h_dim)),
         nn.LeakyReLU(.2),
-        nn.Linear(args.h_dim, args.h_dim),
+        nn.utils.weight_norm(nn.Linear(args.h_dim, args.h_dim)),
         nn.LeakyReLU(.2),
         nn.Linear(args.h_dim, 1)
     )
@@ -22,11 +22,11 @@ def main(args):
 
     generator = nn.Sequential(
         nn.Linear(args.noise_dim, args.h_dim),
-        nn.ReLU(),
         nn.BatchNorm1d(args.h_dim),
+        nn.ReLU(),
         nn.Linear(args.h_dim, args.h_dim),
-        nn.ReLU(),
         nn.BatchNorm1d(args.h_dim),
+        nn.ReLU(),
         nn.Linear(args.h_dim, args.data_dim)
     )
     logsigma = nn.Parameter(torch.zeros(1,))
@@ -64,6 +64,7 @@ def main(args):
             h_tilde = h_tilde.detach()
 
             logq_tilde = logq_unnorm(x_k, h_tilde)
+            logq = logq_unnorm(x_k, h_k)
             g_x = torch.autograd.grad(logp.sum() + logq.sum() - logq_tilde.sum(), [x_k], retain_graph=True)[0]
             # x update
             x_k = x_k + g_x * sgld_step + torch.randn_like(x_k) * sgld_sigma
@@ -169,7 +170,7 @@ if __name__ == "__main__":
     # EBM specific
     parser.add_argument("--n_steps", type=int, default=10,
                         help="number of steps of SGLD per iteration, 100 works for short-run, 20 works for PCD")
-    parser.add_argument("--sgld_step", type=float, default=.001)
+    parser.add_argument("--sgld_step", type=float, default=.01)
     # logging + evaluation
     parser.add_argument("--save_dir", type=str, default='./experiment')
     parser.add_argument("--ckpt_every", type=int, default=10, help="Epochs between checkpoint save")
