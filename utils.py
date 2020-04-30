@@ -109,3 +109,30 @@ def save_checkpoint(state, save, epoch):
 
 def isnan(tensor):
     return (tensor != tensor)
+
+
+def plt_flow_density(logdensity, ax, npts=100, memory=100, title="$q(x)$", device="cpu", low=-4, high=4, exp=True):
+    if not exp:
+        title="$\log q(x)$"
+    side = np.linspace(low, high, npts)
+    xx, yy = np.meshgrid(side, side)
+    x = np.hstack([xx.reshape(-1, 1), yy.reshape(-1, 1)])
+
+    x = torch.from_numpy(x).type(torch.float32).to(device)
+
+    logpx = logdensity(x)[:, 0]
+    logpx = logpx - logpx.logsumexp(0)
+
+    if exp:
+        px = np.exp(logpx.cpu().detach().numpy()).reshape(npts, npts)
+    else:
+        px = logpx.cpu().detach().numpy().reshape(npts, npts)
+    #print(low, high, px.min(), px.max())
+    #px = px / px.sum()
+    #px = px / px.max()
+    #print(px.min(), px.max())
+
+    ax.imshow(px)
+    ax.get_xaxis().set_ticks([])
+    ax.get_yaxis().set_ticks([])
+    ax.set_title(title)
