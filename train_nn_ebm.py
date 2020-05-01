@@ -160,50 +160,78 @@ def conv_lrelu_block(channels, n_units, kernel, padding):
         nn.LeakyReLU(negative_slope=0.1)
     )
 
+def conv_swish_block(channels, n_units, kernel, padding):
+    return nn.Sequential(
+        nn.Conv2d(channels, n_units, kernel, padding=padding),
+        Swish(n_units)
+    )
 
 class ConvLarge(nn.Module):
     # Based on VAT paper, what they call "ConvLarge"
     def __init__(self, avg_pool_kernel=6):
         super(ConvLarge, self).__init__()
         self.layers = nn.ModuleList()
-        if args.cnn_no_bn:
-            self.layers.append(conv_lrelu_block(args.n_ch, n_units=128, kernel=3,
+
+        if args.swish:
+            self.layers.append(conv_swish_block(args.n_ch, n_units=128, kernel=3,
+                                 padding=1))
+            self.layers.append(conv_swish_block(128, 128, kernel=3, padding=1))
+            self.layers.append(conv_swish_block(128, 128, kernel=3, padding=1))
+            self.layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
+            if not args.cnn_no_dropout:
+                self.layers.append(nn.Dropout2d(p=0.5))
+            self.layers.append(conv_swish_block(128, 256, kernel=3, padding=1))
+            self.layers.append(conv_swish_block(256, 256, kernel=3, padding=1))
+            self.layers.append(conv_swish_block(256, 256, kernel=3, padding=1))
+            self.layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
+            if not args.cnn_no_dropout:
+                self.layers.append(nn.Dropout2d(p=0.5))
+            self.layers.append(
+                conv_swish_block(256, 512, kernel=3, padding=0))
+            self.layers.append(
+                conv_swish_block(512, 256, kernel=1, padding=0))
+            self.layers.append(
+                conv_swish_block(256, 128, kernel=1, padding=0))
+        else:
+            if args.cnn_no_bn:
+                self.layers.append(conv_lrelu_block(args.n_ch, n_units=128, kernel=3,
+                                        padding=1))
+                self.layers.append(conv_lrelu_block(128, 128, kernel=3, padding=1))
+                self.layers.append(conv_lrelu_block(128, 128, kernel=3, padding=1))
+            else:
+                self.layers.append(conv_lrelu_bn_block(args.n_ch, n_units=128, kernel=3,
                                     padding=1))
-            self.layers.append(conv_lrelu_block(128, 128, kernel=3, padding=1))
-            self.layers.append(conv_lrelu_block(128, 128, kernel=3, padding=1))
-        else:
-            self.layers.append(conv_lrelu_bn_block(args.n_ch, n_units=128, kernel=3,
-                                padding=1))
-            self.layers.append(conv_lrelu_bn_block(128, 128, kernel=3, padding=1))
-            self.layers.append(conv_lrelu_bn_block(128, 128, kernel=3, padding=1))
-        self.layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
-        if not args.cnn_no_dropout:
-            self.layers.append(nn.Dropout2d(p=0.5))
-        if args.cnn_no_bn:
-            self.layers.append(conv_lrelu_block(128, 256, kernel=3, padding=1))
-            self.layers.append(conv_lrelu_block(256, 256, kernel=3, padding=1))
-            self.layers.append(conv_lrelu_block(256, 256, kernel=3, padding=1))
-        else:
-            self.layers.append(conv_lrelu_bn_block(128, 256, kernel=3, padding=1))
-            self.layers.append(conv_lrelu_bn_block(256, 256, kernel=3, padding=1))
-            self.layers.append(conv_lrelu_bn_block(256, 256, kernel=3, padding=1))
-        self.layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
-        if not args.cnn_no_dropout:
-            self.layers.append(nn.Dropout2d(p=0.5))
-        if args.cnn_no_bn:
-            self.layers.append(
-                conv_lrelu_block(256, 512, kernel=3, padding=0))
-            self.layers.append(
-                conv_lrelu_block(512, 256, kernel=1, padding=0))
-            self.layers.append(
-                conv_lrelu_block(256, 128, kernel=1, padding=0))
-        else:
-            self.layers.append(
-                conv_lrelu_bn_block(256, 512, kernel=3, padding=0))
-            self.layers.append(
-                conv_lrelu_bn_block(512, 256, kernel=1, padding=0))
-            self.layers.append(
-                conv_lrelu_bn_block(256, 128, kernel=1, padding=0))
+                self.layers.append(conv_lrelu_bn_block(128, 128, kernel=3, padding=1))
+                self.layers.append(conv_lrelu_bn_block(128, 128, kernel=3, padding=1))
+            self.layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
+            if not args.cnn_no_dropout:
+                self.layers.append(nn.Dropout2d(p=0.5))
+            if args.cnn_no_bn:
+                self.layers.append(conv_lrelu_block(128, 256, kernel=3, padding=1))
+                self.layers.append(conv_lrelu_block(256, 256, kernel=3, padding=1))
+                self.layers.append(conv_lrelu_block(256, 256, kernel=3, padding=1))
+            else:
+                self.layers.append(conv_lrelu_bn_block(128, 256, kernel=3, padding=1))
+                self.layers.append(conv_lrelu_bn_block(256, 256, kernel=3, padding=1))
+                self.layers.append(conv_lrelu_bn_block(256, 256, kernel=3, padding=1))
+            self.layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
+            if not args.cnn_no_dropout:
+                self.layers.append(nn.Dropout2d(p=0.5))
+            if args.cnn_no_bn:
+                self.layers.append(
+                    conv_lrelu_block(256, 512, kernel=3, padding=0))
+                self.layers.append(
+                    conv_lrelu_block(512, 256, kernel=1, padding=0))
+                self.layers.append(
+                    conv_lrelu_block(256, 128, kernel=1, padding=0))
+            else:
+                self.layers.append(
+                    conv_lrelu_bn_block(256, 512, kernel=3, padding=0))
+                self.layers.append(
+                    conv_lrelu_bn_block(512, 256, kernel=1, padding=0))
+                self.layers.append(
+                    conv_lrelu_bn_block(256, 128, kernel=1, padding=0))
+
         self.layers.append(nn.AvgPool2d(kernel_size=avg_pool_kernel))
         # nn.Linear(128, 10) No final linear, done in class F
 
