@@ -122,10 +122,11 @@ def plt_flow_density(logdensity, ax, npts=100, memory=100, title="$q(x)$", devic
     x = torch.from_numpy(x).type(torch.float32).to(device)
 
     logpx = logdensity(x)[:, 0]
-    logpx = logpx - logpx.logsumexp(0)
 
     if exp:
+        logpx = logpx - logpx.logsumexp(0)
         px = np.exp(logpx.cpu().detach().numpy()).reshape(npts, npts)
+        px = px / px.sum()
     else:
         px = logpx.cpu().detach().numpy().reshape(npts, npts)
     #print(low, high, px.min(), px.max())

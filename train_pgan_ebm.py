@@ -2,6 +2,7 @@ import argparse
 import torch
 import torch.nn as nn
 import torch.utils
+import numpy as np
 import torch.distributions as distributions
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from torchvision import datasets, transforms
@@ -20,6 +21,79 @@ def logit(x, alpha=1e-6):
     return torch.log(x) - torch.log(1 - x)
 
 
+def _helper(netG, x_tilde, eps, sigma):
+    eps = eps.clone().detach().requires_grad_(True)
+    with torch.no_grad():
+        G_eps = netG(eps)
+    bsz = eps.size(0)
+    log_prob_eps = (eps ** 2).view(bsz, -1).sum(1).view(-1, 1)
+    log_prob_x = (x_tilde - G_eps)**2 / sigma**2
+    log_prob_x = log_prob_x.view(bsz, -1)
+    log_prob_x = torch.sum(log_prob_x, dim=1).view(-1, 1)
+    logjoint_vect = -0.5 * (log_prob_eps + log_prob_x)
+    logjoint_vect = logjoint_vect.squeeze()
+    logjoint = torch.sum(logjoint_vect)
+    logjoint.backward()
+    grad_logjoint = eps.grad
+    return logjoint_vect, logjoint, grad_logjoint
+
+
+def get_samples(netG, x_tilde, eps_init, sigma, burn_in, num_samples_posterior,
+            leapfrog_steps, stepsize, flag_adapt, hmc_learning_rate, hmc_opt_accept):
+    device = eps_init.device
+    bsz, eps_dim = eps_init.size(0), eps_init.size(1)
+    n_steps = burn_in + num_samples_posterior
+    acceptHist = torch.zeros(bsz, n_steps).to(device)
+    logjointHist = torch.zeros(bsz, n_steps).to(device)
+    samples = torch.zeros(bsz*num_samples_posterior, eps_dim).to(device)
+    current_eps = eps_init
+    cnt = 0
+    for i in range(n_steps):
+        eps = current_eps
+        p = torch.randn_like(current_eps)
+        current_p = p
+        logjoint_vect, logjoint, grad_logjoint = _helper(netG, x_tilde, current_eps, sigma)
+        current_U = -logjoint_vect.view(-1, 1)
+        grad_U = -grad_logjoint
+        p = p - stepsize * grad_U / 2.0
+        for j in range(leapfrog_steps):
+            eps = eps + stepsize * p
+            if j < leapfrog_steps - 1:
+                logjoint_vect, logjoint, grad_logjoint = _helper(netG, x_tilde, eps, sigma)
+                proposed_U = -logjoint_vect
+                grad_U = -grad_logjoint
+                p = p - stepsize * grad_U
+        logjoint_vect, logjoint, grad_logjoint = _helper(netG, x_tilde, eps, sigma)
+        proposed_U = -logjoint_vect.view(-1, 1)
+        grad_U = -grad_logjoint
+        p = p - stepsize * grad_U / 2.0
+        p = -p
+        current_K = 0.5 * (current_p**2).sum(dim=1)
+        current_K = current_K.view(-1, 1) ## should be size of B x 1
+        proposed_K = 0.5 * (p**2).sum(dim=1)
+        proposed_K = proposed_K.view(-1, 1) ## should be size of B x 1
+        unif = torch.rand(bsz).view(-1, 1).to(device)
+        accept = unif.lt(torch.exp(current_U - proposed_U + current_K - proposed_K))
+        accept = accept.float().squeeze() ## should be B x 1
+        acceptHist[:, i] = accept
+        ind = accept.nonzero().squeeze()
+        try:
+            len(ind) > 0
+            current_eps[ind, :] = eps[ind, :]
+            current_U[ind] = proposed_U[ind]
+        except:
+            print('Samples were all rejected...skipping')
+            continue
+        if i < burn_in and flag_adapt == 1:
+            stepsize = stepsize + hmc_learning_rate * (accept.float().mean() - hmc_opt_accept) * stepsize
+        else:
+            samples[cnt*bsz : (cnt+1)*bsz, :] = current_eps.squeeze()
+            cnt += 1
+        logjointHist[:, i] = -current_U.squeeze()
+    acceptRate = acceptHist.mean(dim=1)
+    return samples, acceptRate, stepsize
+
+
 def main(args):
     utils.makedirs(args.save_dir)
     if args.dataset in TOY_DSETS:
@@ -28,9 +102,9 @@ def main(args):
             nn.LeakyReLU(.2),
             nn.utils.weight_norm(nn.Linear(args.h_dim, args.h_dim)),
             nn.LeakyReLU(.2),
-            nn.Linear(args.h_dim, 1)
+            nn.Linear(args.h_dim, 1, bias=False)
         )
-        logp_fn = lambda x: logp_net(x)# - (x * x).flatten(start_dim=1).sum(1)/10
+        logp_fn = lambda x: logp_net(x)
         class G(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -43,7 +117,7 @@ def main(args):
                     nn.ReLU(),
                     nn.Linear(args.h_dim, args.data_dim)
                 )
-                self.logsigma = nn.Parameter(torch.zeros(1,))
+                self.logsigma = nn.Parameter((torch.zeros(1,) + 1.).log())
     else:
         logp_net = nn.Sequential(
             nn.utils.weight_norm(nn.Linear(args.data_dim, 1000)),
@@ -60,7 +134,7 @@ def main(args):
             nn.LeakyReLU(.2),
             nn.Linear(250, 1, bias=False)
         )
-        logp_fn = lambda x: logp_net(x)  # - (x * x).flatten(start_dim=1).sum(1)/10
+        logp_fn = lambda x: logp_net(x)
 
         class G(nn.Module):
             def __init__(self):
@@ -75,16 +149,14 @@ def main(args):
                     nn.Linear(500, args.data_dim),
                     nn.Sigmoid()
                 )
-                #self.logsigma = nn.Parameter(torch.zeros(1, ) - 5)
-                self.logsigma = nn.Parameter((torch.ones(1,) * .1).log(), requires_grad=False)
+                self.logsigma = nn.Parameter((-torch.ones(1,)))
 
 
     g = G()
 
-    params = list(logp_net.parameters()) + list(g.parameters())
 
-    optimizer = torch.optim.Adam(params, lr=args.lr, betas=[.0, .9], weight_decay=args.weight_decay)
-    #optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.weight_decay)
+    e_optimizer = torch.optim.Adam(logp_net.parameters(), lr=args.lr, betas=[0.5, .999], weight_decay=args.weight_decay)
+    g_optimizer = torch.optim.Adam(g.parameters(), lr=args.lr / 1, betas=[0.5, .999], weight_decay=args.weight_decay)
 
     train_loader, test_loader = get_data(args)
 
@@ -97,137 +169,91 @@ def main(args):
         x = x_mu + torch.randn_like(x_mu) * g.logsigma.exp()
         return x, h
 
-    def logq_unnorm(x, h):
-        logph = distributions.Normal(0, 1).log_prob(h).sum(1)
-        px_given_h = distributions.Normal(g.generator(h), g.logsigma.exp())
-        logpx_given_h = px_given_h.log_prob(x).sum(1)
-        return logpx_given_h + logph
-
-    def refine_q(x_init, h_init, n_steps, sgld_step):
-        x_k = torch.clone(x_init).requires_grad_()
-        h_k = torch.clone(h_init).requires_grad_()
-        sgld_sigma = (2 * sgld_step) ** .5
-        for k in range(n_steps):
-            logp = logp_fn(x_k)[:, 0]
-            logq = logq_unnorm(x_k, h_k)
-            g_h = torch.autograd.grad(logq.sum(), [h_k], retain_graph=True)[0]
-
-            # sample h tilde ~ q(h|x_k)
-            h_tilde = h_k + g_h * sgld_step + torch.randn_like(h_k) * sgld_sigma
-            h_tilde = h_tilde.detach()
-
-            logq_tilde = logq_unnorm(x_k, h_tilde)
-            logq = logq_unnorm(x_k, h_k)
-            g_x = torch.autograd.grad(logp.sum() + logq.sum() - logq_tilde.sum(), [x_k], retain_graph=True)[0]
-            # x update
-            x_k = x_k + g_x * sgld_step + torch.randn_like(x_k) * sgld_sigma
-            x_k = x_k.detach().requires_grad_()#.clamp(0, 1)
-
-            # h update
-            logq = logq_unnorm(x_k, h_k)
-            g_h = torch.autograd.grad(logq.sum(), [h_k], retain_graph=True)[0]
-            h_k = h_k + g_h * sgld_step + torch.randn_like(h_k) * sgld_sigma
-            h_k = h_k.detach().requires_grad_()
-
-        # return x_k.detach().clamp(0, 1), h_k.detach()
-        return x_k.detach(), h_k.detach()
-
-    def refine_q_hmc(x_init, h_init, n_steps, sgld_step, beta=.5):
-        x_k = torch.clone(x_init).requires_grad_()
-        h_k = torch.clone(h_init).requires_grad_()
-        v_x = torch.zeros_like(x_k)
-        v_h = torch.zeros_like(h_k)
-        sgld_sigma_tilde = (2 * sgld_step) ** .5
-        sgld_sigma = (2 * beta * sgld_step) ** .5
-        for k in range(n_steps):
-            logp = logp_fn(x_k)[:, 0]
-            logq = logq_unnorm(x_k, h_k)
-            g_h = torch.autograd.grad(logq.sum(), [h_k], retain_graph=True)[0]
-
-            # sample h tilde ~ q(h|x_k)
-            h_tilde = h_k + g_h * sgld_step + torch.randn_like(h_k) * sgld_sigma_tilde
-            h_tilde = h_tilde.detach()
-
-            logq_tilde = logq_unnorm(x_k, h_tilde)
-            logq = logq_unnorm(x_k, h_k)
-            g_x = torch.autograd.grad(logp.sum() + logq.sum() - logq_tilde.sum(), [x_k], retain_graph=True)[0]
-            # x update
-            v_x = (v_x * (1 - beta) + sgld_step * g_x + torch.randn_like(x_k) * sgld_sigma).detach()
-            x_k = (x_k + v_x).detach().requires_grad_().clamp(0, 1)
-
-            # h update
-            logq = logq_unnorm(x_k, h_k)
-            g_h = torch.autograd.grad(logq.sum(), [h_k], retain_graph=True)[0]
-
-            v_h = (v_h * (1 - beta) + sgld_step * g_h + torch.randn_like(h_k) * sgld_sigma).detach()
-            h_k = (h_k + v_h).detach().requires_grad_()
-
-        return x_k.detach().clamp(0, 1), h_k.detach()
-
-
     g.train()
     g.to(device)
     logp_net.to(device)
 
     itr = 0
+    stepsize = 1. / args.noise_dim
     for epoch in range(args.n_epochs):
         for x_d, _ in train_loader:
-            optimizer.zero_grad()
             if args.dataset in TOY_DSETS:
                 x_d = toy_data.inf_train_gen(args.dataset, batch_size=args.batch_size)
                 x_d = torch.from_numpy(x_d).float().to(device)
             else:
                 x_d = x_d.to(device)
 
-            x_init, h_init = sample_q(args.batch_size)
-            if args.hmc:
-                x, h = refine_q(x_init, h_init, args.n_steps, args.sgld_step)
-            else:
-                x, h = refine_q_hmc(x_init, h_init, args.n_steps, args.sgld_step)
+            # sample from q(x, h)
+            x_g, h_g = sample_q(args.batch_size)
 
+            # ebm obj
             ld = logp_fn(x_d)[:, 0]
-            lm = logp_fn(x.detach())[:, 0]
-            li = logp_fn(x_init.detach())[:, 0]
-            logp_obj = (ld - lm).mean()
-            logq_obj = logq_unnorm(x.detach(), h.detach()).mean()
+            lg_detach = logp_fn(x_g.detach())[:, 0]
+            logp_obj = (ld - lg_detach).mean()
 
-            loss = -(logp_obj + 3 * logq_obj) + args.p_control * (ld**2).mean()
-            loss.backward()
-            optimizer.step()
+            # gen obj
+            lg = logp_fn(x_g)[:, 0]
+            num_samples_posterior = 2
+            h_given_x, acceptRate, stepsize = get_samples(
+                g.generator, x_g.detach(), h_g.clone(), g.logsigma.exp().detach(), burn_in=2,
+                num_samples_posterior=num_samples_posterior, leapfrog_steps=5, stepsize=stepsize, flag_adapt=1,
+                hmc_learning_rate=.02, hmc_opt_accept=.67)
+
+            mean_output_summed = torch.zeros_like(x_g)
+            mean_output = g.generator(h_given_x)
+            # for h in [h_g, h_given_x]:
+            for cnt in range(num_samples_posterior):
+                mean_output_summed = mean_output_summed + mean_output[cnt*args.batch_size:(cnt+1)*args.batch_size]
+            mean_output_summed = mean_output_summed / num_samples_posterior
+
+            c = ((x_g - mean_output_summed) / g.logsigma.exp() ** 2).detach()
+            g_error_entropy = torch.mul(c, x_g).mean(0).sum()
+            logq_obj = lg.mean() + g_error_entropy
+
+            if itr % 2 == 0:
+                e_loss = -logp_obj + (ld ** 2).mean() * args.p_control
+                e_optimizer.zero_grad()
+                e_loss.backward()
+                e_optimizer.step()
+            else:
+                g_loss = -logq_obj
+                g_optimizer.zero_grad()
+                g_loss.backward()
+                g_optimizer.step()
+
+            g.logsigma.data.clamp_(np.log(.01), np.log(.3))
 
             if itr % args.print_every == 0:
-                print("({}) | log p obj = {:.4f}, log q obj = {:.4f}, sigma = {:.4f} | log p(x_d) = {:.4f}, log p(x_m) = {:.4f}, log p(x_i) = {:.4f}".format(
-                    itr, logp_obj.item(), logq_obj.item(), g.logsigma.exp().item(), ld.mean().item(), lm.mean().item(), li.mean().item()))
+                print("({}) | log p obj = {:.4f}, log q obj = {:.4f}, sigma = {:.4f} | "
+                      "log p(x_d) = {:.4f}, log p(x_m) = {:.4f}, ent = {:.4f} | "
+                      "stepsize = {:.4f}".format(
+                    itr, logp_obj.item(), logq_obj.item(), g.logsigma.exp().item(),
+                    ld.mean().item(), lg.mean().item(), g_error_entropy.item(), stepsize.item()))
 
             if itr % args.viz_every == 0:
                 if args.dataset in TOY_DSETS:
                     plt.clf()
-                    xm = x.cpu().numpy()
-                    xn = x_d.cpu().numpy()
-                    xi = x_init.detach().cpu().numpy()
-                    ax = plt.subplot(1, 5, 1, aspect="equal", title='refined')
-                    ax.scatter(xm[:, 0], xm[:, 1], s=1)
+                    xg = x_g.detach().cpu().numpy()
+                    xd = x_d.cpu().numpy()
+                    ax = plt.subplot(1, 4, 1, aspect="equal", title='refined')
+                    ax.scatter(xg[:, 0], xg[:, 1], s=1)
 
-                    ax = plt.subplot(1, 5, 2, aspect="equal", title='initial')
-                    ax.scatter(xi[:, 0], xi[:, 1], s=1)
+                    ax = plt.subplot(1, 4, 2, aspect="equal", title='data')
+                    ax.scatter(xd[:, 0], xd[:, 1], s=1)
 
-                    ax = plt.subplot(1, 5, 3, aspect="equal", title='data')
-                    ax.scatter(xn[:, 0], xn[:, 1], s=1)
-
-                    ax = plt.subplot(1, 5, 4, aspect="equal")
+                    ax = plt.subplot(1, 4, 3, aspect="equal")
                     logp_net.cpu()
                     utils.plt_flow_density(logp_fn, ax, low=x_d.min().item(), high=x_d.max().item())
                     plt.savefig("/{}/{}.png".format(args.save_dir, itr))
                     logp_net.to(device)
 
-                    ax = plt.subplot(1, 5, 5, aspect="equal")
+                    ax = plt.subplot(1, 4, 4, aspect="equal")
                     logp_net.cpu()
                     utils.plt_flow_density(logp_fn, ax, low=x_d.min().item(), high=x_d.max().item(), exp=False)
                     plt.savefig("/{}/{}.png".format(args.save_dir, itr))
                     logp_net.to(device)
                 else:
-                    plot("{}/init_{}.png".format(args.save_dir, itr), x_init.view(x_init.size(0), *args.data_size))
-                    plot("{}/ref_{}.png".format(args.save_dir, itr), x.view(x.size(0), *args.data_size))
+                    plot("{}/ref_{}.png".format(args.save_dir, itr), x_g.view(x_g.size(0), *args.data_size))
                     plot("{}/data_{}.png".format(args.save_dir, itr), x_d.view(x_d.size(0), *args.data_size))
 
             itr += 1
@@ -262,7 +288,7 @@ def get_data(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Energy Based Models and Shit")
     #cifar
-    parser.add_argument("--dataset", type=str, default="circles")#, choices=["mnist", "moons", "circles"])
+    parser.add_argument("--dataset", type=str, default="rings")#, choices=["mnist", "moons", "circles"])
     parser.add_argument("--data_root", type=str, default="../data")
     # optimization
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -273,8 +299,8 @@ if __name__ == "__main__":
     parser.add_argument("--labels_per_class", type=int, default=10,
                         help="number of labeled examples per class, if zero then use all labels")
     parser.add_argument("--optimizer", choices=["adam", "sgd"], default="adam")
-    parser.add_argument("--batch_size", type=int, default=100)
-    parser.add_argument("--n_epochs", type=int, default=200)
+    parser.add_argument("--batch_size", type=int, default=200)
+    parser.add_argument("--n_epochs", type=int, default=1000)
     parser.add_argument("--h_dim", type=int, default=100)
     parser.add_argument("--noise_dim", type=int, default=2)
     # loss weighting
@@ -288,7 +314,7 @@ if __name__ == "__main__":
                         help="number of steps of SGLD per iteration, 100 works for short-run, 20 works for PCD")
     parser.add_argument("--sgld_step", type=float, default=.01)
     # logging + evaluation
-    parser.add_argument("--save_dir", type=str, default='/tmp/')
+    parser.add_argument("--save_dir", type=str, default='/tmp/pgan')
     parser.add_argument("--ckpt_every", type=int, default=10, help="Epochs between checkpoint save")
     parser.add_argument("--eval_every", type=int, default=1, help="Epochs between evaluation")
     parser.add_argument("--print_every", type=int, default=20, help="Iterations between print")
