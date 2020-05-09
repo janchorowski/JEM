@@ -348,6 +348,9 @@ def get_model_and_buffer(args, device, sample_q, ref_x=None):
     use_nn = args.use_nn
     # if args.dataset == "mnist" or args.dataset == "moons":
         # use_nn=False # testing only
+    if args.dataset == "mnist":
+        args.data_size = (1, 28, 28)
+
     if args.dataset == "moons":
         args.input_size = 2
     f = model_cls(args.depth, args.width, args.norm, dropout_rate=args.dropout_rate,
@@ -502,7 +505,6 @@ def get_data(args):
                                     split="train" if train else "test")
 
 
-
     # get all training inds
     full_train = dataset_fn(True, transform_train)
     all_inds = list(range(len(full_train)))
@@ -589,44 +591,6 @@ def get_sample_q(args, device):
                                                   momentum_buffer=momentum_buffer, data=data)
         x_k = t.autograd.Variable(init_sample, requires_grad=True)
         # sgld
-        # if args.psgld:
-        #     V = 0
-        #     for k in range(n_steps):
-        #         # grad log like w.r.t inputs x
-        #         g_bar = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
-        #         # exponential average of magnitude of gradient
-        #         V = args.psgld_alpha * V + (1-args.psgld_alpha) * g_bar * g_bar
-        #         # 1/(1+sqrt(V)) means as V increases, this decreases.
-        #         G = t.ones_like(V) / (args.psgld_lambda * t.ones_like(V) + t.sqrt(V))
-        #         # Problem is G is very large so this causes instability
-        #         # what if I scale G down by its average value? This way we still have proportionally
-        #         # much greater updates in some directions, hopefully without too much instability
-        #         # I suppose we could just rescale the sgld_lr and sgld_std too...
-        #         # Or change the psgld_lambda
-        #         if args.psgld_div_mean:
-        #             G /= G.mean()
-        #         # Like SGLD here except the gradient is weighted by this G term
-        #         # which means if magnitude of gradient in a direction is high, the update is less in that direction
-        #         x_k.data += args.sgld_lr * G * g_bar + args.sgld_std * t.randn_like(x_k) * G
-        # else:
-        #     if args.optim_sgld:
-        #         assert optim_sgld is not None
-        #         # replay_buffer[buffer_inds].data = init_sample.data
-        #         replay_buffer[buffer_inds].data = t.clone(init_sample)
-        #         print(t.sum(t.abs(replay_buffer[buffer_inds].data.to(device) - init_sample.data)))
-        #         # replay_buffer[buffer_inds].data = replay_buffer[buffer_inds].data.to(device)
-        #         # replay_buffer[buffer_inds].data = init_sample
-        #         # print(replay_buffer[buffer_inds].data.to(device))
-        #         # print(init_sample)
-        #         # print(t.sum(t.abs(x_k - init_sample)))
-        #         # print(t.sum(x_k - replay_buffer[buffer_inds].to(device)))
-        #         for k in range(n_steps):
-        #             optim_sgld.zero_grad()
-        #             loss = - f(replay_buffer[buffer_inds].to(device), y=y).sum()
-        #             loss.backward()
-        #             optim_sgld.step()
-        #     else:
-        # Original SGLD we had
         if momentum_buffer is not None:
             momentum = momentum_buffer[buffer_inds].to(device)
         for k in range(n_steps):
@@ -783,6 +747,51 @@ def main(args):
     sqrt = lambda x: int(t.sqrt(t.Tensor([x])))
     plot = lambda p, x: tv.utils.save_image(t.clamp(x, -1, 1), p, normalize=True, nrow=sqrt(x.size(0)))
 
+    if args.pgan:
+        from pgan import G, get_samples
+        logp_net = nn.Sequential(
+            nn.utils.weight_norm(nn.Linear(args.im_sz ** 2, 1000)),
+            nn.LeakyReLU(.2),
+            nn.utils.weight_norm(nn.Linear(1000, 500)),
+            nn.LeakyReLU(.2),
+            nn.utils.weight_norm(nn.Linear(500, 500)),
+            nn.LeakyReLU(.2),
+            nn.utils.weight_norm(nn.Linear(500, 250)),
+            nn.LeakyReLU(.2),
+            nn.utils.weight_norm(nn.Linear(250, 250)),
+            nn.LeakyReLU(.2),
+            nn.utils.weight_norm(nn.Linear(250, 250)),
+            nn.LeakyReLU(.2),
+            nn.Linear(250, 1, bias=False)
+        )
+
+        def logp_fn(x):
+            if len(x.shape) > 2:
+                x = x.reshape(-1, x.shape[-1] ** 2)
+            return logp_net(x)
+
+        data_dim = args.im_sz ** 2
+        g = G(args.noise_dim, data_dim)
+
+        e_optimizer = t.optim.Adam(logp_net.parameters(), lr=args.lr,
+                                       betas=[0.5, .999],
+                                       weight_decay=args.weight_decay)
+        g_optimizer = t.optim.Adam(g.parameters(), lr=args.lr / 1,
+                                       betas=[0.5, .999],
+                                       weight_decay=args.weight_decay)
+
+        g.train()
+        g.to(device)
+        logp_net.to(device)
+
+        def sample_q_pgan(n):
+            h = t.randn((n, args.noise_dim)).to(device)
+            x_mu = g.generator(h)
+            x = x_mu + t.randn_like(x_mu) * g.logsigma.exp()
+            return x, h
+
+        stepsize = 1. / args.noise_dim
+
     # optimizer
     params = f.class_output.parameters() if args.clf_only else f.parameters()
     if args.optimizer == "adam":
@@ -820,6 +829,7 @@ def main(args):
     if args.eval_mode_except_clf:
         f.eval()
 
+    pgan_itr = 0
     for epoch in range(args.n_epochs):
         if epoch in args.decay_epochs:
             for param_group in optim.param_groups:
@@ -912,6 +922,79 @@ def main(args):
                                 epoch, i, sm_loss))
 
                     else:
+                        if args.pgan:
+                            x_g, h_g = sample_q_pgan(args.batch_size)
+
+                            # ebm obj
+                            ld = logp_fn(x_p_d)[:, 0]
+                            lg_detach = logp_fn(x_g.detach())[:, 0]
+                            logp_obj = (ld - lg_detach).mean()
+
+                            # gen obj
+                            lg = logp_fn(x_g)[:, 0]
+                            num_samples_posterior = 2
+                            h_given_x, acceptRate, stepsize = get_samples(
+                                g.generator, x_g.detach(), h_g.clone(),
+                                g.logsigma.exp().detach(), burn_in=2,
+                                num_samples_posterior=num_samples_posterior,
+                                leapfrog_steps=5, stepsize=stepsize,
+                                flag_adapt=1,
+                                hmc_learning_rate=.02, hmc_opt_accept=.67)
+
+                            mean_output_summed = t.zeros_like(x_g)
+                            mean_output = g.generator(h_given_x)
+                            # for h in [h_g, h_given_x]:
+                            for cnt in range(num_samples_posterior):
+                                mean_output_summed = mean_output_summed + mean_output[
+                                                                          cnt * args.batch_size:(cnt + 1) * args.batch_size]
+                            mean_output_summed = mean_output_summed / num_samples_posterior
+
+                            c = ((x_g - mean_output_summed) / g.logsigma.exp() ** 2).detach()
+                            g_error_entropy = t.mul(c, x_g).mean(0).sum()
+                            logq_obj = lg.mean() + g_error_entropy
+
+                            if pgan_itr % 2 == 0:
+                                e_loss = -logp_obj + (
+                                            ld ** 2).mean() * args.p_control
+                                e_optimizer.zero_grad()
+                                e_loss.backward()
+                                e_optimizer.step()
+                            else:
+                                g_loss = -logq_obj
+                                g_optimizer.zero_grad()
+                                g_loss.backward()
+                                g_optimizer.step()
+
+                            g.logsigma.data.clamp_(np.log(args.log_sigma_low), np.log(args.log_sigma_high))
+
+                            if pgan_itr % args.print_every == 0:
+                                print(
+                                    "({}) | log p obj = {:.4f}, log q obj = {:.4f}, sigma = {:.4f} | "
+                                    "log p(x_d) = {:.4f}, log p(x_m) = {:.4f}, ent = {:.4f} | "
+                                    "stepsize = {:.4f}".format(
+                                        pgan_itr, logp_obj.item(), logq_obj.item(),
+                                        g.logsigma.exp().item(),
+                                        ld.mean().item(), lg.mean().item(),
+                                        g_error_entropy.item(),
+                                        stepsize.item()))
+
+                            if pgan_itr % args.viz_every == 0:
+
+                                plot("{}/ref_{}.png".format(args.save_dir,
+                                                            pgan_itr),
+                                     x_g.view(x_g.size(0), *args.data_size))
+                                plot("{}/data_{}.png".format(args.save_dir,
+                                                             pgan_itr),
+                                     x_p_d.view(x_p_d.size(0), *args.data_size))
+
+                            pgan_itr += 1
+
+                            x_g = x_g.reshape(x_p_d.shape)
+
+                            # x_q = x_g.clone().detach()
+                            seed_batch = x_g.clone().detach()
+
+                        # else:
                         if args.class_cond_p_x_sample:
                             assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
                             y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
@@ -1174,6 +1257,13 @@ if __name__ == "__main__":
     parser.add_argument("--cnn_avg_pool_kernel", type=int, default=6)
     parser.add_argument("--use_nn", action="store_true", help="Use NN (4 layer MLP)")
     parser.add_argument("--buffer_reinit_from_data", action="store_true", help="For PCD replay buffer, reinitialize from data points rather than random points")
+    parser.add_argument("--pgan", action="store_true", help="Use PGAN to generate samples")
+    parser.add_argument("--h_dim", type=int, default=100)
+    parser.add_argument("--noise_dim", type=int, default=100)
+    parser.add_argument("--p_control", type=float, default=0.0)
+    parser.add_argument("--log_sigma_low", type=float, default=.001)
+    parser.add_argument("--log_sigma_high", type=float, default=0.2)
+    parser.add_argument("--viz_every", type=int, default=100, help="Iterations between visualization of reference for PGAN")
 
 
 
