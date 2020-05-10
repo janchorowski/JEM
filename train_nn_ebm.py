@@ -1041,6 +1041,7 @@ def main(args):
                 itr += 1
         2/0
 
+    import utils
     utils.makedirs(args.save_dir)
     with open(f'{args.save_dir}/params.txt', 'w') as f:
         json.dump(args.__dict__, f)
