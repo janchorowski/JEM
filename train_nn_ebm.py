@@ -964,7 +964,7 @@ def main(args):
                 loss = args.p_y_given_x_weight * nn.CrossEntropyLoss()(logits, y_lab) + args.vat_weight * lds
 
                 if args.ent_min:
-                    loss += cond_entropy(logits) * args.ent_min_weight
+                    # loss += cond_entropy(logits) * args.ent_min_weight
                     logits_unlab = f.classify(x_p_d)
                     loss += cond_entropy(logits_unlab) * args.ent_min_weight
 
@@ -1071,11 +1071,9 @@ def main(args):
                     L += args.p_y_given_x_weight * l_p_y_given_x
 
                     if args.ent_min:
-                        L += cond_entropy(logits) * args.ent_min_weight
+                        # L += cond_entropy(logits) * args.ent_min_weight
                         logits_unlab = f.classify(x_p_d)
-                        # Do we need to do the proper dataset weighing? Ie since more
-                        # unlabeled than labeled data points
-                        # Maybe it's ok
+                        # Just unlabeled now
                         L += cond_entropy(logits_unlab) * args.ent_min_weight
 
                 if args.p_x_y_weight > 0:  # maximize log p(x, y)
