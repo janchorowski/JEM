@@ -128,6 +128,7 @@ def plt_flow_density(logdensity, ax, npts=100, memory=100, title="$q(x)$", devic
         px = np.exp(logpx.cpu().detach().numpy()).reshape(npts, npts)
         px = px / px.sum()
     else:
+        logpx = logpx - logpx.logsumexp(0)
         px = logpx.cpu().detach().numpy().reshape(npts, npts)
     #print(low, high, px.min(), px.max())
     #px = px / px.sum()
