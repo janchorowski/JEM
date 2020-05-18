@@ -297,7 +297,7 @@ def main(args):
                     g_error_entropy = torch.mul(c, x_g).mean(0).sum()
                     logq_obj = lg.mean() + args.ent_weight * g_error_entropy
                 else:
-                    num_samples_posterior = 2
+                    num_samples_posterior = 1
                     h_given_x, acceptRate, stepsize = hmc.get_gen_posterior_samples(
                         g.generator, x_g.detach(), h_g.clone(), g.logsigma.exp().detach(), burn_in=2,
                         num_samples_posterior=num_samples_posterior, leapfrog_steps=5, stepsize=stepsize, flag_adapt=1,
@@ -350,10 +350,10 @@ def main(args):
             if itr % args.print_every == 0:
                 print("({}) | log p obj = {:.4f}, log q obj = {:.4f}, sigma = {:.4f} | "
                       "log p(x_d) = {:.4f}, log p(x_m) = {:.4f}, ent = {:.4f} | "
-                      "sgld_lr = {}, sgld_lr_z = {}, sgld_lr_zne = {} ".format(
+                      "sgld_lr = {}, sgld_lr_z = {}, sgld_lr_zne = {} | stepsize = {}".format(
                     itr, logp_obj.item(), logq_obj.item(), g.logsigma.exp().item(),
                     ld.mean().item(), lg_detach.mean().item(), g_error_entropy.item(),
-                    sgld_lr, sgld_lr_z, sgld_lr_zne))
+                    sgld_lr, sgld_lr_z, sgld_lr_zne, stepsize))
 
             if itr % args.viz_every == 0:
                 if args.dataset in TOY_DSETS:
@@ -565,7 +565,7 @@ def get_models(args):
                     nn.ReLU(inplace=True),
                     nn.Linear(args.h_dim, args.data_dim, bias=False)
                 )
-                self.logsigma = nn.Parameter((torch.zeros(1, ) + .01).log())
+                self.logsigma = nn.Parameter((torch.zeros(1, ) + .01))
     elif args.dataset == "mnist":
         logp_net = nn.Sequential(
             nn.utils.weight_norm(nn.Linear(args.data_dim, 1000)),
@@ -596,7 +596,7 @@ def get_models(args):
                     nn.Linear(500, args.data_dim, bias=False),
                     nn.Sigmoid()
                 )
-                self.logsigma = nn.Parameter((torch.ones(1, ) * .01).log())
+                self.logsigma = nn.Parameter((torch.ones(1, ) * .01))
 
     elif args.dataset == "svhn" or args.dataset == "cifar10":
         # logp_net = nn.Sequential(
@@ -622,27 +622,29 @@ def get_models(args):
         #     nn.LeakyReLU(.2, inplace=True),
         #     nn.utils.weight_norm(nn.Conv2d(128, 1, 1, 1, 0)),
         # )
-        # logp_net = nn.Sequential(
-        #     # input is (nc) x 32 x 32
-        #     nn.utils.weight_norm(nn.Conv2d(3, 64, 4, 2, 1)),
-        #     nn.LeakyReLU(0.2, inplace=True),
-        #     # state size. (ndf) x 16 x 16
-        #     nn.utils.weight_norm(nn.Conv2d(64, 128, 4, 2, 1)),
-        #     #nn.BatchNorm2d(ndf * 2),
-        #     nn.LeakyReLU(0.2, inplace=True),
-        #     # state size. (ndf*2) x 8 x 8
-        #     nn.utils.weight_norm(nn.Conv2d(128, 256, 4, 2, 1)),
-        #     #nn.BatchNorm2d(ndf * 4),
-        #     nn.LeakyReLU(0.2, inplace=True),
-        #     # state size. (ndf*4) x 4 x 4
-        #     nn.utils.weight_norm(nn.Conv2d(256, 512, 4, 2, 1)),
-        #     #nn.BatchNorm2d(ndf * 8),
-        #     nn.LeakyReLU(0.2, inplace=True),
-        #     # state size. (ndf*8) x 2 x 2
-        #     nn.Conv2d(512, 1, 2, 1, 0, bias=False),
-        #     #nn.Sigmoid()
-        # )
-        logp_net = ResNetDiscriminator()
+        if not args.resnet:
+            logp_net = nn.Sequential(
+                # input is (nc) x 32 x 32
+                nn.utils.weight_norm(nn.Conv2d(3, 64, 4, 2, 1)),
+                nn.LeakyReLU(0.2, inplace=True),
+                # state size. (ndf) x 16 x 16
+                nn.utils.weight_norm(nn.Conv2d(64, 128, 4, 2, 1)),
+                #nn.BatchNorm2d(ndf * 2),
+                nn.LeakyReLU(0.2, inplace=True),
+                # state size. (ndf*2) x 8 x 8
+                nn.utils.weight_norm(nn.Conv2d(128, 256, 4, 2, 1)),
+                #nn.BatchNorm2d(ndf * 4),
+                nn.LeakyReLU(0.2, inplace=True),
+                # state size. (ndf*4) x 4 x 4
+                nn.utils.weight_norm(nn.Conv2d(256, 512, 4, 2, 1)),
+                #nn.BatchNorm2d(ndf * 8),
+                nn.LeakyReLU(0.2, inplace=True),
+                # state size. (ndf*8) x 2 x 2
+                nn.Conv2d(512, 1, 2, 1, 0, bias=False),
+                #nn.Sigmoid()
+            )
+        else:
+            logp_net = ResNetDiscriminator()
 
 
 
@@ -694,8 +696,8 @@ def get_models(args):
         class G(nn.Module):
             def __init__(self):
                 super().__init__()
-                self.generator = ResNetGenerator()#Generator()
-                self.logsigma = nn.Parameter((torch.ones(1, ) * .01).log())
+                self.generator = ResNetGenerator() if args.resnet else Generator()
+                self.logsigma = nn.Parameter((torch.ones(1, ) * .01))
 
     return logp_net, G()
 
@@ -745,6 +747,7 @@ if __name__ == "__main__":
     parser.add_argument("--semi-supervised", type=bool, default=False)
     parser.add_argument("--vat", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--stagger", action="store_true", help="Run VAT instead of JEM")
+    parser.add_argument("--resnet", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--hmc", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--refine", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--refine_latent", action="store_true", help="Run VAT instead of JEM")
