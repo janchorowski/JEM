@@ -1371,7 +1371,7 @@ def main(args):
 
                     else:
                         if args.pgan:
-                            x_pgan = pgan_train_loader.__next__()
+                            x_pgan, _ = pgan_train_loader.__next__()
                             x_g = pgan_optimize_and_get_sample(pgan_itr, x_pgan)
                             pgan_itr += 1
 
