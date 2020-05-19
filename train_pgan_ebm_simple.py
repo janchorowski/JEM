@@ -24,6 +24,25 @@ def avg_pool2d(x):
     return (x[:, :, ::2, ::2] + x[:, :, 1::2, ::2] + x[:, :, ::2, 1::2] + x[:, :, 1::2, 1::2]) / 4
 
 
+def brute_force_jac(x_g, h_g):
+    jac = torch.zeros((x_g.size(0), x_g.size(1), h_g.size(1)))
+    for d in range(x_g.size(1)):
+        j = torch.autograd.grad(x_g[:, d].sum(), h_g, retain_graph=True)[0]
+        jac[:, d, :] = j
+    return jac
+
+def condition_number(j):
+    cvals = []
+    hvals = []
+    lvals = []
+    for i in range(j.size(0)):
+        u, s, v = torch.svd(j[i], compute_uv=False)
+        cvals.append((s[0] / s[-1])[None])
+        hvals.append((s[0])[None])
+        lvals.append((s[-1])[None])
+    return torch.cat(cvals), torch.cat(hvals), torch.cat(lvals)
+
+
 class GeneratorBlock(nn.Module):
     '''ResNet-style block for the generator model.'''
 
@@ -400,6 +419,21 @@ def main(args):
                     plt.hist(s2.log().numpy(), alpha=.75)
                     plt.savefig("{}/{}_log_svd.png".format(args.save_dir, itr))
                 else:
+                    x_g, h_g = sample_q(args.batch_size, requires_grad=True)
+                    J = brute_force_jac(x_g, h_g)
+                    c, h, l = condition_number(J)
+                    plt.clf()
+                    plt.hist(c.numpy())
+                    plt.savefig("/{}/cn_{}.png".format(args.save_dir, itr))
+                    plt.clf()
+                    plt.hist(h.numpy())
+                    plt.savefig("/{}/large_s_{}.png".format(args.save_dir, itr))
+                    plt.clf()
+                    plt.hist(l.numpy())
+                    plt.savefig("/{}/small_s_{}.png".format(args.save_dir, itr))
+                    plt.clf()
+
+
                     plot("{}/{}_init.png".format(data_sgld_dir, itr),
                          x_g.view(x_g.size(0), *args.data_size))
                     #plot("{}/{}_ref.png".format(args.save_dir, itr), x_g_ref.view(x_g.size(0), *args.data_size))
@@ -474,6 +508,7 @@ def main(args):
                     chain = gfn(z_chain)
                     plot("{}/{}.png".format(z_sgld_chain_dir, itr),
                          chain.view(chain.size(0), *args.data_size))
+
 
             itr += 1
 
@@ -565,7 +600,7 @@ def get_models(args):
                     nn.ReLU(inplace=True),
                     nn.Linear(args.h_dim, args.data_dim, bias=False)
                 )
-                self.logsigma = nn.Parameter((torch.zeros(1, ) + .01))
+                self.logsigma = nn.Parameter((torch.zeros(1, ) + .01).log())
     elif args.dataset == "mnist":
         logp_net = nn.Sequential(
             nn.utils.weight_norm(nn.Linear(args.data_dim, 1000)),
@@ -596,7 +631,7 @@ def get_models(args):
                     nn.Linear(500, args.data_dim, bias=False),
                     nn.Sigmoid()
                 )
-                self.logsigma = nn.Parameter((torch.ones(1, ) * .01))
+                self.logsigma = nn.Parameter((torch.ones(1, ) * .01).log())
 
     elif args.dataset == "svhn" or args.dataset == "cifar10":
         # logp_net = nn.Sequential(
@@ -697,7 +732,7 @@ def get_models(args):
             def __init__(self):
                 super().__init__()
                 self.generator = ResNetGenerator() if args.resnet else Generator()
-                self.logsigma = nn.Parameter((torch.ones(1, ) * .01))
+                self.logsigma = nn.Parameter((torch.ones(1, ) * .01).log())
 
     return logp_net, G()
 
