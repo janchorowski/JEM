@@ -202,7 +202,7 @@ def logit(x, alpha=1e-6):
 def update_logp(u, u_mu, std):
     return distributions.Normal(u_mu, std).log_prob(u).flatten(start_dim=1).sum(1)
 
-def MALA(vars, logp_fn, step_lr, dataset):
+def MALA(vars, logp_fn, step_lr):
     step_std = (2 * step_lr) ** .5
     logp_vars = logp_fn(*vars)
     grads = torch.autograd.grad(logp_vars.sum(), vars)
@@ -218,7 +218,7 @@ def MALA(vars, logp_fn, step_lr, dataset):
     logp_accept = logp_updates + logp_backward - logp_vars - logp_forward
     p_accept = logp_accept.exp()
     accept = (torch.rand_like(p_accept) < p_accept).float()
-    if dataset in ("svhn", "cifar10"):
+    if args.dataset in ("svhn", "cifar10"):
         #next_vars = [accept[:, None, None, None] * u_v + (1 - accept[:, None, None, None]) * v for u_v, v in zip(updates, vars)]
         next_vars = []
         for u_v, v in zip(updates, vars):
