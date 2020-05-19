@@ -39,6 +39,9 @@ from batchrenorm import BatchRenorm1d
 from losses import VATLoss, LDSLoss, sliced_score_matching_vr, \
     sliced_score_matching, denoising_score_matching
 
+import toy_data
+TOY_DSETS = ("moons", "circles", "8gaussians", "pinwheel", "2spirals", "checkerboard", "rings", "swissroll")
+
 
 class DataSubset(Dataset):
     def __init__(self, base_dataset, inds=None, size=-1):
@@ -350,6 +353,9 @@ def get_model_and_buffer(args, device, sample_q, ref_x=None):
         # use_nn=False # testing only
     if args.dataset == "mnist":
         args.data_size = (1, 28, 28)
+    elif args.dataset == "svhn" or args.dataset == "cifar10":
+        args.data_dim = 32 * 32 * 3
+        args.data_size = (3, 32, 32)
 
     if args.dataset == "moons":
         args.input_size = 2
@@ -396,6 +402,12 @@ def logit_transform(x, lamb = 0.05):
 
 def get_data(args):
     if args.dataset == "svhn":
+        # if args.pgan:
+        #     transform_train=tr.Compose([tr.ToTensor(),
+        #                                     lambda x: (((255. * x) + t.rand_like(
+        #                                                 x)) / 256.),
+        #                                     lambda x: 2 * x - 1])
+        #
         if args.svhn_logit_transform:
             transform_train = tr.Compose(
                 [tr.Pad(4),
@@ -756,120 +768,460 @@ def main(args):
 
 
     if args.pgan:
-        from pgan import G, get_samples
-        logp_net = nn.Sequential(
-            nn.utils.weight_norm(nn.Linear(args.im_sz ** 2, 1000)),
-            nn.LeakyReLU(.2),
-            nn.utils.weight_norm(nn.Linear(1000, 500)),
-            nn.LeakyReLU(.2),
-            nn.utils.weight_norm(nn.Linear(500, 500)),
-            nn.LeakyReLU(.2),
-            nn.utils.weight_norm(nn.Linear(500, 250)),
-            nn.LeakyReLU(.2),
-            nn.utils.weight_norm(nn.Linear(250, 250)),
-            nn.LeakyReLU(.2),
-            nn.utils.weight_norm(nn.Linear(250, 250)),
-            nn.LeakyReLU(.2),
-            nn.Linear(250, 1, bias=False)
-        )
 
-        def logp_fn(x):
-            if len(x.shape) > 2:
-                x = x.reshape(-1, x.shape[-1] ** 2)
-            return logp_net(x)
+        from train_pgan_ebm_simple import get_models, brute_force_jac, condition_number, MALA
+        from train_pgan_ebm_simple import get_data as pgan_get_data
+        import hmc
 
-        data_dim = args.im_sz ** 2
-        g = G(args.noise_dim, data_dim)
+        data_sgld_dir = "{}/{}".format(args.save_dir, "data_sgld")
+        utils.makedirs(data_sgld_dir)
+        gen_sgld_dir = "{}/{}".format(args.save_dir, "generator_sgld")
+        utils.makedirs(gen_sgld_dir)
+        z_sgld_dir = "{}/{}".format(args.save_dir, "z_only_sgld")
+        utils.makedirs(z_sgld_dir)
+
+        data_sgld_chain_dir = "{}/{}_chain".format(args.save_dir,
+                                                   "data_sgld_chain")
+        utils.makedirs(data_sgld_chain_dir)
+        gen_sgld_chain_dir = "{}/{}_chain".format(args.save_dir,
+                                                  "generator_sgld_chain")
+        utils.makedirs(gen_sgld_chain_dir)
+        z_sgld_chain_dir = "{}/{}_chain".format(args.save_dir,
+                                                "z_only_sgld_chain")
+        utils.makedirs(z_sgld_chain_dir)
+        logp_net, g = get_models(args)
 
         e_optimizer = t.optim.Adam(logp_net.parameters(), lr=args.lr,
-                                       betas=[0.5, .999],
+                                       betas=[0., .9],
                                        weight_decay=args.weight_decay)
         g_optimizer = t.optim.Adam(g.parameters(), lr=args.lr / 1,
-                                       betas=[0.5, .999],
+                                       betas=[0., .9],
                                        weight_decay=args.weight_decay)
 
-        g.train()
-        g.to(device)
-        logp_net.to(device)
+        pgan_train_loader, pgan_test_loader, plot = pgan_get_data(args)
 
-        def sample_q_pgan(n):
+        def sample_q_pgan(n, requires_grad=False):
             h = t.randn((n, args.noise_dim)).to(device)
+            if requires_grad:
+                h.requires_grad_()
             x_mu = g.generator(h)
             x = x_mu + t.randn_like(x_mu) * g.logsigma.exp()
             return x, h
 
+        def logq_joint(x, h):
+            logph = tdist.Normal(0, 1).log_prob(h).sum(1)
+            px_given_h = tdist.Normal(g.generator(h), g.logsigma.exp())
+            logpx_given_h = px_given_h.log_prob(x).flatten(start_dim=1).sum(1)
+            return logpx_given_h + logph
+
+        g.train()
+        g.to(device)
+        logp_net.train()
+        logp_net.to(device)
+
         pgan_itr = 0
+
+        # def logp_fn(x):
+        #     if len(x.shape) > 2:
+        #         x = x.reshape(-1, x.shape[-1] ** 2)
+        #     return logp_net(x)
+
         args.pgan_stepsize = 1. / args.noise_dim
+        args.pgan_sgld_lr = 1. / args.noise_dim
+        args.pgan_sgld_lr_z = 1. / args.noise_dim
+        args.pgan_sgld_lr_zne = 1. / args.noise_dim
+        # TODO
+        # Ok first try and just get it running
+        # THen try 0 steps, 1 step, etc. A few different configs.
+        def pgan_optimize_and_get_sample(itr, x_d):
 
-        def pgan_optimize_and_get_sample(pgan_itr, x_p_d):
+            if args.dataset in TOY_DSETS:
+                x_d = toy_data.inf_train_gen(args.dataset,
+                                             batch_size=args.batch_size)
+                x_d = t.from_numpy(x_d).float().to(device)
+            else:
+                x_d = x_d.to(device)
+
+            # sample from q(x, h)
             x_g, h_g = sample_q_pgan(args.batch_size)
-
+            x_g_ref = x_g
             # ebm obj
-            ld = logp_fn(x_p_d)[:, 0]
-            lg_detach = logp_fn(x_g.detach())[:, 0]
+            ld = logp_net(x_d).squeeze()
+            lg_detach = logp_net(x_g_ref.detach()).squeeze()
             logp_obj = (ld - lg_detach).mean()
 
-            # gen obj
-            lg = logp_fn(x_g)[:, 0]
-            num_samples_posterior = 2
-            h_given_x, acceptRate, args.pgan_stepsize = get_samples(
-                g.generator, x_g.detach(), h_g.clone(),
-                g.logsigma.exp().detach(), burn_in=2,
-                num_samples_posterior=num_samples_posterior,
-                leapfrog_steps=5, stepsize=args.pgan_stepsize,
-                flag_adapt=1,
-                hmc_learning_rate=.02, hmc_opt_accept=.67)
-
-            mean_output_summed = t.zeros_like(x_g)
-            mean_output = g.generator(h_given_x)
-            # for h in [h_g, h_given_x]:
-            for cnt in range(num_samples_posterior):
-                mean_output_summed = mean_output_summed + mean_output[
-                                                          cnt * args.batch_size:(cnt + 1) * args.batch_size]
-            mean_output_summed = mean_output_summed / num_samples_posterior
-
-            c = ((x_g - mean_output_summed) / g.logsigma.exp() ** 2).detach()
-            g_error_entropy = t.mul(c, x_g).mean(0).sum()
-            logq_obj = lg.mean() + g_error_entropy
-
-            if pgan_itr % 2 == 0:
-                e_loss = -logp_obj + (
-                        ld ** 2).mean() * args.p_control
+            e_loss = -logp_obj + (ld ** 2).mean() * args.p_control
+            if itr % args.e_iters == 0:
                 e_optimizer.zero_grad()
                 e_loss.backward()
                 e_optimizer.step()
+
+            # gen obj
+            lg = logp_net(x_g).squeeze()
+
+            if args.gp == 0:
+                if args.my_single_sample:
+                    logq = logq_joint(x_g.detach(), h_g.detach())
+                    # mine
+                    logq_obj = lg.mean() - args.ent_weight * logq.mean()
+                    g_error_entropy = -logq.mean()
+                elif args.adji_single_sample:
+                    # adji
+                    mean_output_summed = g.generator(h_g)
+                    c = ((
+                                 x_g - mean_output_summed) / g.logsigma.exp() ** 2).detach()
+                    g_error_entropy = t.mul(c, x_g).mean(0).sum()
+                    logq_obj = lg.mean() + args.ent_weight * g_error_entropy
+                else:
+                    num_samples_posterior = 1
+                    h_given_x, acceptRate, args.pgan_stepsize = hmc.get_gen_posterior_samples(
+                        g.generator, x_g.detach(), h_g.clone(),
+                        g.logsigma.exp().detach(), burn_in=2,
+                        num_samples_posterior=num_samples_posterior,
+                        leapfrog_steps=5, stepsize=args.pgan_stepsize, flag_adapt=1,
+                        hmc_learning_rate=.02, hmc_opt_accept=.67)
+
+                    mean_output_summed = t.zeros_like(x_g)
+                    mean_output = g.generator(h_given_x)
+                    # for h in [h_g, h_given_x]:
+                    for cnt in range(num_samples_posterior):
+                        mean_output_summed = mean_output_summed + mean_output[
+                                                                  cnt * args.batch_size:(
+                                                                                                cnt + 1) * args.batch_size]
+                    mean_output_summed = mean_output_summed / num_samples_posterior
+
+                    c = ((
+                                 x_g - mean_output_summed) / g.logsigma.exp() ** 2).detach()
+                    g_error_entropy = t.mul(c, x_g).mean(0).sum()
+                    logq_obj = lg.mean() + args.ent_weight * g_error_entropy
             else:
-                g_loss = -logq_obj
-                g_optimizer.zero_grad()
-                g_loss.backward()
-                g_optimizer.step()
+                x_g, h_g = sample_q_pgan(args.batch_size, requires_grad=True)
+                if args.brute_force:
+                    jac = t.zeros(
+                        (x_g.size(0), x_g.size(1), h_g.size(1)))
+                    j = t.autograd.grad(x_g[:, 0].sum(), h_g,
+                                        retain_graph=True)[0]
+                    jac[:, 0, :] = j
+                    j = t.autograd.grad(x_g[:, 1].sum(), h_g,
+                                        retain_graph=True)[0]
+                    jac[:, 1, :] = j
+                    u, s, v = t.svd(jac)
+                    logs = s.log()
+                    logpx = 0 - logs.sum(1)
+                    g_error_entropy = logpx.mean()
+                    logq_obj = lg.mean() - args.ent_weight * logpx.mean()
 
-            g.logsigma.data.clamp_(np.log(args.log_sigma_low),
-                                   np.log(args.log_sigma_high))
+                else:
+                    eps = t.randn_like(x_g)
+                    epsJ = t.autograd.grad(x_g, h_g, grad_outputs=eps,
+                                           retain_graph=True)[0]
+                    # eps2 = torch.randn_like(x_g)
+                    # epsJ2 = torch.autograd.grad(x_g, h_g, grad_outputs=eps2, retain_graph=True)[0]
+                    epsJtJeps = (epsJ * epsJ).sum(1)
+                    g_error_entropy = ((epsJtJeps - args.gp) ** 2).mean()
+                    logq_obj = lg.mean() - args.ent_weight * g_error_entropy
 
-            if pgan_itr % args.print_every == 0:
+            g_loss = -logq_obj
+            g_optimizer.zero_grad()
+            g_loss.backward()
+            g_optimizer.step()
+
+            if args.clamp:
+                g.logsigma.data.clamp_(np.log(.01), np.log(.0101))
+            else:
+                g.logsigma.data.clamp_(np.log(.01), np.log(.3))
+
+            if itr % args.print_every == 0:
                 print(
                     "({}) | log p obj = {:.4f}, log q obj = {:.4f}, sigma = {:.4f} | "
                     "log p(x_d) = {:.4f}, log p(x_m) = {:.4f}, ent = {:.4f} | "
-                    "stepsize = {:.4f}".format(
-                        pgan_itr, logp_obj.item(), logq_obj.item(),
+                    "sgld_lr = {}, sgld_lr_z = {}, sgld_lr_zne = {} | stepsize = {}".format(
+                        itr, logp_obj.item(), logq_obj.item(),
                         g.logsigma.exp().item(),
-                        ld.mean().item(), lg.mean().item(),
+                        ld.mean().item(), lg_detach.mean().item(),
                         g_error_entropy.item(),
-                        args.pgan_stepsize.item()))
+                        args.pgan_sgld_lr, args.pgan_sgld_lr_z, args.pgan_sgld_lr_zne, args.pgan_stepsize))
 
-            if pgan_itr % args.viz_every == 0:
+            if itr % args.viz_every == 0:
+                if args.dataset in TOY_DSETS:
+                    plt.clf()
+                    xg = x_g_ref.detach().cpu().numpy()
+                    xd = x_d.cpu().numpy()
 
-                plot("{}/ref_{}.png".format(args.save_dir,
-                                            pgan_itr),
-                     x_g.view(x_g.size(0), *args.data_size))
-                plot("{}/data_{}.png".format(args.save_dir,
-                                             pgan_itr),
-                     x_p_d.view(x_p_d.size(0), *args.data_size))
+                    ax = plt.subplot(1, 4, 1, aspect="equal",
+                                     title='refined')
+                    ax.scatter(xg[:, 0], xg[:, 1], s=1)
 
-            x_g = x_g.reshape(x_p_d.shape)
+                    ax = plt.subplot(1, 4, 2, aspect="equal", title='data')
+                    ax.scatter(xd[:, 0], xd[:, 1], s=1)
 
+                    ax = plt.subplot(1, 4, 3, aspect="equal")
+                    logp_net.cpu()
+                    utils.plt_flow_density(logp_net, ax,
+                                           low=x_d.min().item(),
+                                           high=x_d.max().item())
+                    plt.savefig("/{}/{}.png".format(args.save_dir, itr))
+                    logp_net.to(device)
+
+                    ax = plt.subplot(1, 4, 4, aspect="equal")
+                    logp_net.cpu()
+                    utils.plt_flow_density(logp_net, ax,
+                                           low=x_d.min().item(),
+                                           high=x_d.max().item(), exp=False)
+                    plt.savefig("/{}/{}.png".format(args.save_dir, itr))
+                    logp_net.to(device)
+
+                    x_g, h_g = sample_q_pgan(args.batch_size, requires_grad=True)
+                    jac = t.zeros(
+                        (x_g.size(0), x_g.size(1), h_g.size(1)))
+
+                    j = t.autograd.grad(x_g[:, 0].sum(), h_g,
+                                        retain_graph=True)[0]
+                    jac[:, 0, :] = j
+                    j = t.autograd.grad(x_g[:, 1].sum(), h_g,
+                                        retain_graph=True)[0]
+                    jac[:, 1, :] = j
+                    u, s, v = t.svd(jac)
+
+                    s1, s2 = s[:, 0].detach(), s[:, 1].detach()
+                    plt.clf()
+                    plt.hist(s1.numpy(), alpha=.75)
+                    plt.hist(s2.numpy(), alpha=.75)
+                    plt.savefig("{}/{}_svd.png".format(args.save_dir, itr))
+
+                    plt.clf()
+                    plt.hist(s1.log().numpy(), alpha=.75)
+                    plt.hist(s2.log().numpy(), alpha=.75)
+                    plt.savefig(
+                        "{}/{}_log_svd.png".format(args.save_dir, itr))
+                else:
+                    x_g, h_g = sample_q_pgan(args.batch_size, requires_grad=True)
+                    J = brute_force_jac(x_g, h_g)
+                    c, h, l = condition_number(J)
+                    plt.clf()
+                    plt.hist(c.numpy())
+                    plt.savefig("/{}/cn_{}.png".format(args.save_dir, itr))
+                    plt.clf()
+                    plt.hist(h.numpy())
+                    plt.savefig(
+                        "/{}/large_s_{}.png".format(args.save_dir, itr))
+                    plt.clf()
+                    plt.hist(l.numpy())
+                    plt.savefig(
+                        "/{}/small_s_{}.png".format(args.save_dir, itr))
+                    plt.clf()
+
+                    plot("{}/{}_init.png".format(data_sgld_dir, itr),
+                         x_g.view(x_g.size(0), *args.data_size))
+                    # plot("{}/{}_ref.png".format(args.save_dir, itr), x_g_ref.view(x_g.size(0), *args.data_size))
+                    # input space sgld
+                    x_sgld = x_g.clone()
+                    steps = [x_sgld.clone()]
+                    accepts = []
+                    for k in range(args.sgld_steps):
+                        [x_sgld], a = MALA([x_sgld],
+                                           lambda x: logp_net(x).squeeze(),
+                                           args.pgan_sgld_lr, args.dataset)
+                        steps.append(x_sgld.clone())
+                        accepts.append(a.item())
+                    ar = np.mean(accepts)
+                    print("accept rate: {}".format(ar))
+                    args.pgan_sgld_lr = args.pgan_sgld_lr + .2 * (ar - .57) * args.pgan_sgld_lr
+                    plot("{}/{}_ref.png".format(data_sgld_dir, itr),
+                         x_sgld.view(x_g.size(0), *args.data_size))
+
+                    chain = t.cat([step[0][None] for step in steps], 0)
+                    plot("{}/{}.png".format(data_sgld_chain_dir, itr),
+                         chain.view(chain.size(0), *args.data_size))
+
+                    # latent space sgld
+                    eps_sgld = t.randn_like(x_g)
+                    z_sgld = t.randn(
+                        (eps_sgld.size(0), args.noise_dim)).to(
+                        eps_sgld.device)
+                    vs = (
+                        z_sgld.requires_grad_(), eps_sgld.requires_grad_())
+                    steps = [vs]
+                    accepts = []
+                    gfn = lambda z, e: g.generator(z) + g.logsigma.exp() * e
+                    efn = lambda z, e: logp_net(gfn(z, e)).squeeze()
+                    x_sgld = gfn(z_sgld, eps_sgld)
+                    plot("{}/{}_init.png".format(gen_sgld_dir, itr),
+                         x_sgld.view(x_g.size(0), *args.data_size))
+                    for k in range(args.sgld_steps):
+                        vs, a = MALA(vs, efn, args.pgan_sgld_lr_z, args.dataset)
+                        steps.append([v.clone() for v in vs])
+                        accepts.append(a.item())
+                    ar = np.mean(accepts)
+                    print("accept rate: {}".format(ar))
+                    args.pgan_sgld_lr_z = args.pgan_sgld_lr_z + .2 * (ar - .57) * args.pgan_sgld_lr_z
+                    z_sgld, eps_sgld = steps[-1]
+                    x_sgld = gfn(z_sgld, eps_sgld)
+                    plot("{}/{}_ref.png".format(gen_sgld_dir, itr),
+                         x_sgld.view(x_g.size(0), *args.data_size))
+
+                    z_steps, eps_steps = zip(*steps)
+                    z_chain = t.cat([step[0][None] for step in z_steps],
+                                    0)
+                    eps_chain = t.cat(
+                        [step[0][None] for step in eps_steps], 0)
+                    chain = gfn(z_chain, eps_chain)
+                    plot("{}/{}.png".format(gen_sgld_chain_dir, itr),
+                         chain.view(chain.size(0), *args.data_size))
+
+                    # latent space sgld no eps
+                    z_sgld = t.randn(
+                        (eps_sgld.size(0), args.noise_dim)).to(
+                        eps_sgld.device)
+                    vs = (z_sgld.requires_grad_(),)
+                    steps = [vs]
+                    accepts = []
+                    gfn = lambda z: g.generator(z)
+                    efn = lambda z: logp_net(gfn(z)).squeeze()
+                    x_sgld = gfn(z_sgld)
+                    plot("{}/{}_init.png".format(z_sgld_dir, itr),
+                         x_sgld.view(x_g.size(0), *args.data_size))
+                    for k in range(args.sgld_steps):
+                        vs, a = MALA(vs, efn, args.pgan_sgld_lr_zne, args.dataset)
+                        steps.append([v.clone() for v in vs])
+                        accepts.append(a.item())
+                    ar = np.mean(accepts)
+                    print("accept rate: {}".format(ar))
+                    sgld_lr_zne = args.pgan_sgld_lr_zne + .2 * (
+                            ar - .57) * args.pgan_sgld_lr_zne
+                    z_sgld, = steps[-1]
+                    x_sgld = gfn(z_sgld)
+                    plot("{}/{}_ref.png".format(z_sgld_dir, itr),
+                         x_sgld.view(x_g.size(0), *args.data_size))
+
+                    z_steps = [s[0] for s in steps]
+                    z_chain = t.cat([step[0][None] for step in z_steps],
+                                    0)
+                    chain = gfn(z_chain)
+                    plot("{}/{}.png".format(z_sgld_chain_dir, itr),
+                         chain.view(chain.size(0), *args.data_size))
+
+            # Be careful with reshape
             return x_g
+
+        # for epoch in range(args.n_epochs):
+        #     for x_d, _ in train_loader:
+
+
+        # from pgan import G, get_samples
+        # logp_net = nn.Sequential(
+        #     nn.utils.weight_norm(nn.Linear(args.im_sz ** 2, 1000)),
+        #     nn.LeakyReLU(.2),
+        #     nn.utils.weight_norm(nn.Linear(1000, 500)),
+        #     nn.LeakyReLU(.2),
+        #     nn.utils.weight_norm(nn.Linear(500, 500)),
+        #     nn.LeakyReLU(.2),
+        #     nn.utils.weight_norm(nn.Linear(500, 250)),
+        #     nn.LeakyReLU(.2),
+        #     nn.utils.weight_norm(nn.Linear(250, 250)),
+        #     nn.LeakyReLU(.2),
+        #     nn.utils.weight_norm(nn.Linear(250, 250)),
+        #     nn.LeakyReLU(.2),
+        #     nn.Linear(250, 1, bias=False)
+        # )
+        #
+        # def logp_fn(x):
+        #     if len(x.shape) > 2:
+        #         x = x.reshape(-1, x.shape[-1] ** 2)
+        #     return logp_net(x)
+        #
+        # data_dim = args.im_sz ** 2
+        # g = G(args.noise_dim, data_dim)
+        #
+        # e_optimizer = t.optim.Adam(logp_net.parameters(), lr=args.lr,
+        #                                betas=[0.5, .999],
+        #                                weight_decay=args.weight_decay)
+        # g_optimizer = t.optim.Adam(g.parameters(), lr=args.lr / 1,
+        #                                betas=[0.5, .999],
+        #                                weight_decay=args.weight_decay)
+        #
+        # g.train()
+        # g.to(device)
+        # logp_net.to(device)
+        #
+        # def sample_q_pgan(n):
+        #     h = t.randn((n, args.noise_dim)).to(device)
+        #     x_mu = g.generator(h)
+        #     x = x_mu + t.randn_like(x_mu) * g.logsigma.exp()
+        #     return x, h
+        #
+        # pgan_itr = 0
+        # args.pgan_stepsize = 1. / args.noise_dim
+        #
+        # def pgan_optimize_and_get_sample(pgan_itr, x_p_d):
+        #     x_g, h_g = sample_q_pgan(args.batch_size)
+        #
+        #     # ebm obj
+        #     ld = logp_fn(x_p_d)[:, 0]
+        #     lg_detach = logp_fn(x_g.detach())[:, 0]
+        #     logp_obj = (ld - lg_detach).mean()
+        #
+        #     # gen obj
+        #     lg = logp_fn(x_g)[:, 0]
+        #     num_samples_posterior = 2
+        #     h_given_x, acceptRate, args.pgan_stepsize = get_samples(
+        #         g.generator, x_g.detach(), h_g.clone(),
+        #         g.logsigma.exp().detach(), burn_in=2,
+        #         num_samples_posterior=num_samples_posterior,
+        #         leapfrog_steps=5, stepsize=args.pgan_stepsize,
+        #         flag_adapt=1,
+        #         hmc_learning_rate=.02, hmc_opt_accept=.67)
+        #
+        #     mean_output_summed = t.zeros_like(x_g)
+        #     mean_output = g.generator(h_given_x)
+        #     # for h in [h_g, h_given_x]:
+        #     for cnt in range(num_samples_posterior):
+        #         mean_output_summed = mean_output_summed + mean_output[
+        #                                                   cnt * args.batch_size:(cnt + 1) * args.batch_size]
+        #     mean_output_summed = mean_output_summed / num_samples_posterior
+        #
+        #     c = ((x_g - mean_output_summed) / g.logsigma.exp() ** 2).detach()
+        #     g_error_entropy = t.mul(c, x_g).mean(0).sum()
+        #     logq_obj = lg.mean() + g_error_entropy
+        #
+        #     if pgan_itr % 2 == 0:
+        #         e_loss = -logp_obj + (
+        #                 ld ** 2).mean() * args.p_control
+        #         e_optimizer.zero_grad()
+        #         e_loss.backward()
+        #         e_optimizer.step()
+        #     else:
+        #         g_loss = -logq_obj
+        #         g_optimizer.zero_grad()
+        #         g_loss.backward()
+        #         g_optimizer.step()
+        #
+        #     g.logsigma.data.clamp_(np.log(args.log_sigma_low),
+        #                            np.log(args.log_sigma_high))
+        #
+        #     if pgan_itr % args.print_every == 0:
+        #         print(
+        #             "({}) | log p obj = {:.4f}, log q obj = {:.4f}, sigma = {:.4f} | "
+        #             "log p(x_d) = {:.4f}, log p(x_m) = {:.4f}, ent = {:.4f} | "
+        #             "stepsize = {:.4f}".format(
+        #                 pgan_itr, logp_obj.item(), logq_obj.item(),
+        #                 g.logsigma.exp().item(),
+        #                 ld.mean().item(), lg.mean().item(),
+        #                 g_error_entropy.item(),
+        #                 args.pgan_stepsize.item()))
+        #
+        #     if pgan_itr % args.viz_every == 0:
+        #
+        #         plot("{}/ref_{}.png".format(args.save_dir,
+        #                                     pgan_itr),
+        #              x_g.view(x_g.size(0), *args.data_size))
+        #         plot("{}/data_{}.png".format(args.save_dir,
+        #                                      pgan_itr),
+        #              x_p_d.view(x_p_d.size(0), *args.data_size))
+        #
+        #     x_g = x_g.reshape(x_p_d.shape)
+        #
+        #     return x_g
 
 
     # optimizer
@@ -912,7 +1264,8 @@ def main(args):
 
     if args.pgan:
         while True:
-            for x_p_d, _ in dload_train:
+            # for x_p_d, _ in dload_train:
+            for x_p_d, _ in pgan_train_loader:
                 x_p_d = x_p_d.to(device)
 
                 pgan_optimize_and_get_sample(pgan_itr, x_p_d)
@@ -1294,6 +1647,19 @@ if __name__ == "__main__":
     parser.add_argument("--pgan_warmup_iters", type=int, default=80000,
                         help="number of iters to train PGAN before training EBM")
     parser.add_argument("--pgan_test", action="store_true", help="TESTING ONLY")
+    parser.add_argument("--resnet", action="store_true", help="Resnet for PGAN")
+    parser.add_argument("--e_iters", type=int, default=1)
+    parser.add_argument("--g_iters", type=int, default=1)
+    parser.add_argument("--gp", type=float, default=0.)
+    parser.add_argument("--hmc", action="store_true", help="for PGAN")
+    parser.add_argument("--refine", action="store_true", help="for PGAN")
+    parser.add_argument("--refine_latent", action="store_true", help="for PGAN")
+    parser.add_argument("--brute_force", action="store_true", help="for PGAN")
+    parser.add_argument("--my_single_sample", action="store_true", help="for PGAN")
+    parser.add_argument("--adji_single_sample", action="store_true", help="for PGAN")
+    parser.add_argument("--clamp", action="store_true", help="for PGAN")
+    parser.add_argument("--ent_weight", type=float, default=1.)
+    parser.add_argument("--sgld_steps", type=int, default=100, help="for PGAN")
 
 
     args = parser.parse_args()
