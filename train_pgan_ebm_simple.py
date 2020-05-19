@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import utils
 import toy_data
 import hmc
+from singular import find_extreme_singular_vectors, log_sigular_values_sum_bound
 TOY_DSETS = ("moons", "circles", "8gaussians", "pinwheel", "2spirals", "checkerboard", "rings", "swissroll")
 
 import torch.nn.init as nninit
@@ -233,7 +234,12 @@ def MALA(vars, logp_fn, step_lr):
 
 def main(args):
     utils.makedirs(args.save_dir)
-
+    cn_sgld_dir = "{}/{}".format(args.save_dir, "condition_number")
+    utils.makedirs(cn_sgld_dir)
+    h_sgld_dir = "{}/{}".format(args.save_dir, "largest_sv")
+    utils.makedirs(h_sgld_dir)
+    l_sgld_dir = "{}/{}".format(args.save_dir, "smallest_sv")
+    utils.makedirs(l_sgld_dir)
     data_sgld_dir = "{}/{}".format(args.save_dir, "data_sgld")
     utils.makedirs(data_sgld_dir)
     gen_sgld_dir = "{}/{}".format(args.save_dir, "generator_sgld")
@@ -315,6 +321,12 @@ def main(args):
                     c = ((x_g - mean_output_summed) / g.logsigma.exp() ** 2).detach()
                     g_error_entropy = torch.mul(c, x_g).mean(0).sum()
                     logq_obj = lg.mean() + args.ent_weight * g_error_entropy
+                elif args.sv_bound:
+                    v, t = find_extreme_singular_vectors(g.generator, h_g, args.niters, args.v_norm)
+                    log_sv = log_sigular_values_sum_bound(g.generator, h_g, v, args.v_norm)
+                    logpx = - log_sv.mean() #- distributions.Normal(0, g.logsigma.exp()).entropy() * args.data_dim
+                    g_error_entropy = logpx
+                    logq_obj = lg.mean() - args.ent_weight * logpx
                 else:
                     num_samples_posterior = 1
                     h_given_x, acceptRate, stepsize = hmc.get_gen_posterior_samples(
@@ -331,7 +343,7 @@ def main(args):
 
                     c = ((x_g - mean_output_summed) / g.logsigma.exp() ** 2).detach()
                     g_error_entropy = torch.mul(c, x_g).mean(0).sum()
-                    logq_obj = lg.mean() + args.ent_weight * g_error_entropy
+                    logq_obj = lg.mean() - args.ent_weight * g_error_entropy
             else:
                 x_g, h_g = sample_q(args.batch_size, requires_grad=True)
                 if args.brute_force:
@@ -424,13 +436,13 @@ def main(args):
                     c, h, l = condition_number(J)
                     plt.clf()
                     plt.hist(c.numpy())
-                    plt.savefig("/{}/cn_{}.png".format(args.save_dir, itr))
+                    plt.savefig("{}/cn_{}.png".format(cn_sgld_dir, itr))
                     plt.clf()
                     plt.hist(h.numpy())
-                    plt.savefig("/{}/large_s_{}.png".format(args.save_dir, itr))
+                    plt.savefig("{}/large_s_{}.png".format(h_sgld_dir, itr))
                     plt.clf()
                     plt.hist(l.numpy())
-                    plt.savefig("/{}/small_s_{}.png".format(args.save_dir, itr))
+                    plt.savefig("{}/small_s_{}.png".format(l_sgld_dir, itr))
                     plt.clf()
 
 
@@ -747,6 +759,7 @@ if __name__ == "__main__":
     parser.add_argument("--data_root", type=str, default="../data")
     # optimization
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--v_norm", type=float, default=.01)
     parser.add_argument("--decay_epochs", nargs="+", type=int, default=[160, 180],
                         help="decay learning rate by decay_rate at these epochs")
     parser.add_argument("--decay_rate", type=float, default=.3,
@@ -761,6 +774,7 @@ if __name__ == "__main__":
     parser.add_argument("--noise_dim", type=int, default=2)
     parser.add_argument("--e_iters", type=int, default=1)
     parser.add_argument("--g_iters", type=int, default=1)
+    parser.add_argument("--niters", type=int, default=10)
     # loss weighting
     parser.add_argument("--ent_weight", type=float, default=1.)
     parser.add_argument("--gp", type=float, default=0.)
@@ -790,6 +804,7 @@ if __name__ == "__main__":
     parser.add_argument("--my_single_sample", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--adji_single_sample", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--clamp", action="store_true", help="Run VAT instead of JEM")
+    parser.add_argument("--sv_bound", action="store_true", help="Run VAT instead of JEM")
 
     args = parser.parse_args()
     if args.dataset in TOY_DSETS:
