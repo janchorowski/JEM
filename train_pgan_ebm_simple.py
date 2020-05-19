@@ -328,7 +328,7 @@ def main(args):
                     g_error_entropy = logpx
                     logq_obj = lg.mean() - args.ent_weight * logpx
                 else:
-                    num_samples_posterior = 1
+                    num_samples_posterior = 2
                     h_given_x, acceptRate, stepsize = hmc.get_gen_posterior_samples(
                         g.generator, x_g.detach(), h_g.clone(), g.logsigma.exp().detach(), burn_in=2,
                         num_samples_posterior=num_samples_posterior, leapfrog_steps=5, stepsize=stepsize, flag_adapt=1,
