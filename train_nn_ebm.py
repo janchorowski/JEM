@@ -1370,7 +1370,8 @@ def main(args):
 
                     else:
                         if args.pgan:
-                            x_g = pgan_optimize_and_get_sample(pgan_itr, x_p_d)
+                            x_pgan = pgan_train_loader.__next__()
+                            x_g = pgan_optimize_and_get_sample(pgan_itr, x_pgan)
                             pgan_itr += 1
 
                             # x_q = x_g.clone().detach()
