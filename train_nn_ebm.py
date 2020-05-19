@@ -769,7 +769,7 @@ def main(args):
 
     if args.pgan:
 
-        from train_pgan_ebm_simple import get_models, brute_force_jac, condition_number, MALA
+        from train_pgan_ebm_simple import get_models, brute_force_jac, condition_number
         from train_pgan_ebm_simple import get_data as pgan_get_data
         import hmc
 
@@ -874,7 +874,7 @@ def main(args):
                     g_error_entropy = t.mul(c, x_g).mean(0).sum()
                     logq_obj = lg.mean() + args.ent_weight * g_error_entropy
                 else:
-                    num_samples_posterior = 1
+                    num_samples_posterior = 2
                     h_given_x, acceptRate, args.pgan_stepsize = hmc.get_gen_posterior_samples(
                         g.generator, x_g.detach(), h_g.clone(),
                         g.logsigma.exp().detach(), burn_in=2,
@@ -1014,93 +1014,6 @@ def main(args):
 
                     plot("{}/{}_init.png".format(data_sgld_dir, itr),
                          x_g.view(x_g.size(0), *args.data_size))
-                    # plot("{}/{}_ref.png".format(args.save_dir, itr), x_g_ref.view(x_g.size(0), *args.data_size))
-                    # input space sgld
-                    x_sgld = x_g.clone()
-                    steps = [x_sgld.clone()]
-                    accepts = []
-                    for k in range(args.sgld_steps):
-                        [x_sgld], a = MALA([x_sgld],
-                                           lambda x: logp_net(x).squeeze(),
-                                           args.pgan_sgld_lr, args.dataset)
-                        steps.append(x_sgld.clone())
-                        accepts.append(a.item())
-                    ar = np.mean(accepts)
-                    print("accept rate: {}".format(ar))
-                    args.pgan_sgld_lr = args.pgan_sgld_lr + .2 * (ar - .57) * args.pgan_sgld_lr
-                    plot("{}/{}_ref.png".format(data_sgld_dir, itr),
-                         x_sgld.view(x_g.size(0), *args.data_size))
-
-                    chain = t.cat([step[0][None] for step in steps], 0)
-                    plot("{}/{}.png".format(data_sgld_chain_dir, itr),
-                         chain.view(chain.size(0), *args.data_size))
-
-                    # latent space sgld
-                    eps_sgld = t.randn_like(x_g)
-                    z_sgld = t.randn(
-                        (eps_sgld.size(0), args.noise_dim)).to(
-                        eps_sgld.device)
-                    vs = (
-                        z_sgld.requires_grad_(), eps_sgld.requires_grad_())
-                    steps = [vs]
-                    accepts = []
-                    gfn = lambda z, e: g.generator(z) + g.logsigma.exp() * e
-                    efn = lambda z, e: logp_net(gfn(z, e)).squeeze()
-                    x_sgld = gfn(z_sgld, eps_sgld)
-                    plot("{}/{}_init.png".format(gen_sgld_dir, itr),
-                         x_sgld.view(x_g.size(0), *args.data_size))
-                    for k in range(args.sgld_steps):
-                        vs, a = MALA(vs, efn, args.pgan_sgld_lr_z, args.dataset)
-                        steps.append([v.clone() for v in vs])
-                        accepts.append(a.item())
-                    ar = np.mean(accepts)
-                    print("accept rate: {}".format(ar))
-                    args.pgan_sgld_lr_z = args.pgan_sgld_lr_z + .2 * (ar - .57) * args.pgan_sgld_lr_z
-                    z_sgld, eps_sgld = steps[-1]
-                    x_sgld = gfn(z_sgld, eps_sgld)
-                    plot("{}/{}_ref.png".format(gen_sgld_dir, itr),
-                         x_sgld.view(x_g.size(0), *args.data_size))
-
-                    z_steps, eps_steps = zip(*steps)
-                    z_chain = t.cat([step[0][None] for step in z_steps],
-                                    0)
-                    eps_chain = t.cat(
-                        [step[0][None] for step in eps_steps], 0)
-                    chain = gfn(z_chain, eps_chain)
-                    plot("{}/{}.png".format(gen_sgld_chain_dir, itr),
-                         chain.view(chain.size(0), *args.data_size))
-
-                    # latent space sgld no eps
-                    z_sgld = t.randn(
-                        (eps_sgld.size(0), args.noise_dim)).to(
-                        eps_sgld.device)
-                    vs = (z_sgld.requires_grad_(),)
-                    steps = [vs]
-                    accepts = []
-                    gfn = lambda z: g.generator(z)
-                    efn = lambda z: logp_net(gfn(z)).squeeze()
-                    x_sgld = gfn(z_sgld)
-                    plot("{}/{}_init.png".format(z_sgld_dir, itr),
-                         x_sgld.view(x_g.size(0), *args.data_size))
-                    for k in range(args.sgld_steps):
-                        vs, a = MALA(vs, efn, args.pgan_sgld_lr_zne, args.dataset)
-                        steps.append([v.clone() for v in vs])
-                        accepts.append(a.item())
-                    ar = np.mean(accepts)
-                    print("accept rate: {}".format(ar))
-                    sgld_lr_zne = args.pgan_sgld_lr_zne + .2 * (
-                            ar - .57) * args.pgan_sgld_lr_zne
-                    z_sgld, = steps[-1]
-                    x_sgld = gfn(z_sgld)
-                    plot("{}/{}_ref.png".format(z_sgld_dir, itr),
-                         x_sgld.view(x_g.size(0), *args.data_size))
-
-                    z_steps = [s[0] for s in steps]
-                    z_chain = t.cat([step[0][None] for step in z_steps],
-                                    0)
-                    chain = gfn(z_chain)
-                    plot("{}/{}.png".format(z_sgld_chain_dir, itr),
-                         chain.view(chain.size(0), *args.data_size))
 
             # Be careful with reshape
             return x_g
