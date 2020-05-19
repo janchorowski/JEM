@@ -343,7 +343,7 @@ def main(args):
 
                     c = ((x_g - mean_output_summed) / g.logsigma.exp() ** 2).detach()
                     g_error_entropy = torch.mul(c, x_g).mean(0).sum()
-                    logq_obj = lg.mean() - args.ent_weight * g_error_entropy
+                    logq_obj = lg.mean() + args.ent_weight * g_error_entropy
             else:
                 x_g, h_g = sample_q(args.batch_size, requires_grad=True)
                 if args.brute_force:
@@ -755,7 +755,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser("Energy Based Models and Shit")
     #cifar
     parser.add_argument("--dataset", type=str, default="circles")#, choices=["mnist", "moons", "circles"])
-    parser.add_argument("--mode", type=str, default="reverse_kl")
     parser.add_argument("--data_root", type=str, default="../data")
     # optimization
     parser.add_argument("--lr", type=float, default=1e-3)
