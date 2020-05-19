@@ -799,6 +799,7 @@ def main(args):
                                        weight_decay=args.weight_decay)
 
         pgan_train_loader, pgan_test_loader, plot = pgan_get_data(args)
+        pgan_train_loader = cycle(pgan_train_loader)
 
         def sample_q_pgan(n, requires_grad=False):
             h = t.randn((n, args.noise_dim)).to(device)
