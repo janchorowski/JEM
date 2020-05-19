@@ -960,7 +960,7 @@ def main(args):
                     utils.plt_flow_density(logp_net, ax,
                                            low=x_d.min().item(),
                                            high=x_d.max().item())
-                    plt.savefig("/{}/{}.png".format(args.save_dir, itr))
+                    plt.savefig("{}/{}.png".format(args.save_dir, itr))
                     logp_net.to(device)
 
                     ax = plt.subplot(1, 4, 4, aspect="equal")
@@ -968,7 +968,7 @@ def main(args):
                     utils.plt_flow_density(logp_net, ax,
                                            low=x_d.min().item(),
                                            high=x_d.max().item(), exp=False)
-                    plt.savefig("/{}/{}.png".format(args.save_dir, itr))
+                    plt.savefig("{}/{}.png".format(args.save_dir, itr))
                     logp_net.to(device)
 
                     x_g, h_g = sample_q_pgan(args.batch_size, requires_grad=True)
@@ -1000,15 +1000,15 @@ def main(args):
                     c, h, l = condition_number(J)
                     plt.clf()
                     plt.hist(c.numpy())
-                    plt.savefig("/{}/cn_{}.png".format(args.save_dir, itr))
+                    plt.savefig("{}/cn_{}.png".format(args.save_dir, itr))
                     plt.clf()
                     plt.hist(h.numpy())
                     plt.savefig(
-                        "/{}/large_s_{}.png".format(args.save_dir, itr))
+                        "{}/large_s_{}.png".format(args.save_dir, itr))
                     plt.clf()
                     plt.hist(l.numpy())
                     plt.savefig(
-                        "/{}/small_s_{}.png".format(args.save_dir, itr))
+                        "{}/small_s_{}.png".format(args.save_dir, itr))
                     plt.clf()
 
                     plot("{}/{}_init.png".format(data_sgld_dir, itr),
