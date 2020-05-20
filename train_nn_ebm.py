@@ -1317,6 +1317,13 @@ def main(args):
                                                                                                            fp - fq))
                         L += args.p_x_weight * l_p_x
 
+                        if args.l2_energy_reg > 0:
+                            L += args.l2_energy_reg * (fp_all ** 2).sum()
+                            # If we want to regularize the negative samples as https://arxiv.org/pdf/1903.08689.pdf does too
+                            if args.l2_energy_reg_neg:
+                                L += args.l2_energy_reg * (fq_all ** 2).sum()
+
+
                 if args.p_y_given_x_weight > 0:  # maximize log p(y | x)
                     if args.eval_mode_except_clf:
                         f.train()
@@ -1575,6 +1582,8 @@ if __name__ == "__main__":
     parser.add_argument("--clamp", action="store_true", help="for PGAN")
     parser.add_argument("--ent_weight", type=float, default=1.)
     parser.add_argument("--sgld_steps", type=int, default=100, help="for PGAN")
+    parser.add_argument("--l2_energy_reg", type=float, default=0., help="Regularize energy outputs")
+    parser.add_argument("--l2_energy_reg_neg", action="store_true", help="Regularize energy outputs on negative samples (x_q) as well")
 
 
     args = parser.parse_args()
