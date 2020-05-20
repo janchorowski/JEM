@@ -143,7 +143,7 @@ def get_ebm_samples(netEBM, x_init, burn_in, num_samples_posterior,
         if i < burn_in and flag_adapt == 1:
             stepsize = stepsize + hmc_learning_rate * (accept.float().mean() - hmc_opt_accept) * stepsize
         else:
-            samples[cnt*bsz : (cnt+1)*bsz, :] = current_x.squeeze()
+            samples[cnt*bsz : (cnt+1)*bsz, :] = current_x#.squeeze()
             cnt += 1
         logjointHist[:, i] = -current_U.squeeze()
     acceptRate = acceptHist.mean(dim=1)

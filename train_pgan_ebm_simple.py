@@ -255,8 +255,8 @@ def main(args):
     utils.makedirs(z_sgld_chain_dir)
     logp_net, g = get_models(args)
 
-    e_optimizer = torch.optim.Adam(logp_net.parameters(), lr=args.lr, betas=[0., .9], weight_decay=args.weight_decay)
-    g_optimizer = torch.optim.Adam(g.parameters(), lr=args.lr / 1, betas=[0., .9], weight_decay=args.weight_decay)
+    e_optimizer = torch.optim.Adam(logp_net.parameters(), lr=args.lr, betas=[.0, .9], weight_decay=args.weight_decay)
+    g_optimizer = torch.optim.Adam(g.parameters(), lr=args.lr / 1, betas=[.0, .9], weight_decay=args.weight_decay)
 
     train_loader, test_loader, plot = get_data(args)
 
@@ -324,7 +324,7 @@ def main(args):
                 elif args.sv_bound:
                     v, t = find_extreme_singular_vectors(g.generator, h_g, args.niters, args.v_norm)
                     log_sv = log_sigular_values_sum_bound(g.generator, h_g, v, args.v_norm)
-                    logpx = - log_sv.mean() #- distributions.Normal(0, g.logsigma.exp()).entropy() * args.data_dim
+                    logpx = - log_sv.mean() - distributions.Normal(0, g.logsigma.exp()).entropy() * args.data_dim
                     g_error_entropy = logpx
                     logq_obj = lg.mean() - args.ent_weight * logpx
                 else:
@@ -612,7 +612,8 @@ def get_models(args):
                     nn.ReLU(inplace=True),
                     nn.Linear(args.h_dim, args.data_dim, bias=False)
                 )
-                self.logsigma = nn.Parameter((torch.zeros(1, ) + .01).log())
+                self.logsigma = nn.Parameter((torch.zeros(1, ) + .01))
+                self.post_logsigma = nn.Parameter(torch.zeros(args.noise_dim,))
     elif args.dataset == "mnist":
         logp_net = nn.Sequential(
             nn.utils.weight_norm(nn.Linear(args.data_dim, 1000)),
@@ -644,6 +645,7 @@ def get_models(args):
                     nn.Sigmoid()
                 )
                 self.logsigma = nn.Parameter((torch.ones(1, ) * .01).log())
+                self.post_logsigma = nn.Parameter(torch.zeros(args.noise_dim, ))
 
     elif args.dataset == "svhn" or args.dataset == "cifar10":
         # logp_net = nn.Sequential(
@@ -672,18 +674,18 @@ def get_models(args):
         if not args.resnet:
             logp_net = nn.Sequential(
                 # input is (nc) x 32 x 32
-                nn.utils.weight_norm(nn.Conv2d(3, 64, 4, 2, 1)),
+                nn.Conv2d(3, 64, 4, 2, 1),
                 nn.LeakyReLU(0.2, inplace=True),
                 # state size. (ndf) x 16 x 16
-                nn.utils.weight_norm(nn.Conv2d(64, 128, 4, 2, 1)),
+                nn.Conv2d(64, 128, 4, 2, 1),
                 #nn.BatchNorm2d(ndf * 2),
                 nn.LeakyReLU(0.2, inplace=True),
                 # state size. (ndf*2) x 8 x 8
-                nn.utils.weight_norm(nn.Conv2d(128, 256, 4, 2, 1)),
+                nn.Conv2d(128, 256, 4, 2, 1),
                 #nn.BatchNorm2d(ndf * 4),
                 nn.LeakyReLU(0.2, inplace=True),
                 # state size. (ndf*4) x 4 x 4
-                nn.utils.weight_norm(nn.Conv2d(256, 512, 4, 2, 1)),
+                nn.Conv2d(256, 512, 4, 2, 1),
                 #nn.BatchNorm2d(ndf * 8),
                 nn.LeakyReLU(0.2, inplace=True),
                 # state size. (ndf*8) x 2 x 2
@@ -745,6 +747,7 @@ def get_models(args):
                 super().__init__()
                 self.generator = ResNetGenerator() if args.resnet else Generator()
                 self.logsigma = nn.Parameter((torch.ones(1, ) * .01).log())
+                self.post_logsigma = nn.Parameter(torch.zeros(args.noise_dim, ))
 
     return logp_net, G()
 
