@@ -798,8 +798,8 @@ def main(args):
                                        betas=[0., .9],
                                        weight_decay=args.weight_decay)
 
-        pgan_train_loader, pgan_test_loader, plot = pgan_get_data(args)
-        pgan_train_loader = cycle(pgan_train_loader)
+        # pgan_train_loader, pgan_test_loader, plot = pgan_get_data(args)
+        # pgan_train_loader = cycle(pgan_train_loader)
 
         def sample_q_pgan(n, requires_grad=False):
             h = t.randn((n, args.noise_dim)).to(device)
@@ -1178,8 +1178,8 @@ def main(args):
 
     if args.pgan:
         while True:
-            # for x_p_d, _ in dload_train:
-            for x_p_d, _ in pgan_train_loader:
+            for x_p_d, _ in dload_train:
+            # for x_p_d, _ in pgan_train_loader:
                 x_p_d = x_p_d.to(device)
 
                 pgan_optimize_and_get_sample(pgan_itr, x_p_d)
@@ -1284,7 +1284,8 @@ def main(args):
 
                     else:
                         if args.pgan:
-                            x_pgan, _ = pgan_train_loader.__next__()
+                            # x_pgan, _ = pgan_train_loader.__next__()
+                            x_pgan = x_p_d
                             x_g = pgan_optimize_and_get_sample(pgan_itr, x_pgan)
                             pgan_itr += 1
 
