@@ -95,6 +95,7 @@ class NeuralNet(nn.Module):
             # self.layers.append(BatchRenorm1d(hidden_size))
         elif args.batch_norm:
             self.layers.append(nn.BatchNorm1d(num_features=hidden_size, affine=affine))
+
         if args.swish:
             self.layers.append(Swish(hidden_size))
         elif args.leaky_relu:
@@ -102,6 +103,8 @@ class NeuralNet(nn.Module):
         else:
             self.layers.append(nn.ReLU())
 
+        if args.dropout:
+            self.layers.append(nn.Dropout(p=0.5))
 
         for i in range(extra_layers):
             self.layers.append(nn.Linear(hidden_size, hidden_size))
@@ -118,6 +121,8 @@ class NeuralNet(nn.Module):
                 self.layers.append(nn.LeakyReLU())
             else:
                 self.layers.append(nn.ReLU())
+            if args.dropout:
+                self.layers.append(nn.Dropout(p=0.5))
 
         # Note output layer not needed here because it is done in class F
 
@@ -1532,6 +1537,7 @@ if __name__ == "__main__":
     parser.add_argument("--vbnorm", action="store_true", help="Run with Virtual Batch Norm")
     parser.add_argument("--vbnorm_batch_size", type=int, default=1000)
     parser.add_argument("--batch_norm", action="store_true", help="Run with Batch Norm (on NN; CNN has by default)")
+    parser.add_argument("--dropout", action="store_true", help="Run with Dropout (on NN; CNN has by default)")
     parser.add_argument("--mnist_no_logit_transform", action="store_true", help="Run MNIST without logit transform")
     parser.add_argument("--mnist_no_crop", action="store_true", help="Run MNIST without crop")
     parser.add_argument("--score_match", action="store_true", help="Note: so far implemented only for p(x). Use score matching instead of SGLD in training JEM")
