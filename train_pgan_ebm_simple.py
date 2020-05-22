@@ -318,6 +318,7 @@ def main(args):
                 e_loss.backward()
                 e_optimizer.step()
 
+            x_g, h_g = sample_q(args.batch_size)
             # gen obj
             lg = logp_net(x_g).squeeze()
 
@@ -353,6 +354,20 @@ def main(args):
                     c = ((x_g - mean_output_summed) / g.logsigma.exp() ** 2).detach()
                     g_error_entropy = torch.mul(c, x_g).mean(0).sum()
                     logq_obj = lg.mean() + args.ent_weight * g_error_entropy
+
+                elif args.ub_inf:
+                    post = distributions.Normal(h_g.detach(), post_logsigma.logsigma.exp())
+                    joint = logq_joint(x_g.detach(), h_g.detach())
+                    post_logp = post.log_prob(h_g.detach()).sum(1)
+                    uelbo = joint - post_logp
+                    post_loss = uelbo.mean()
+                    p_optimizer.zero_grad()
+                    post_loss.backward(retain_graph=True)
+                    p_optimizer.step()
+
+                    #c = ((x_g - mean_output_summed) / g.logsigma.exp() ** 2).detach()
+                    g_error_entropy = uelbo.mean()#torch.mul(c, x_g).mean(0).sum()
+                    logq_obj = lg.mean() - args.ent_weight * uelbo.mean()
 
                 else:
                     num_samples_posterior = 2
@@ -394,11 +409,11 @@ def main(args):
                     g_error_entropy = ((epsJtJeps - args.gp) ** 2).mean()
                     logq_obj = lg.mean() - args.ent_weight * g_error_entropy
 
-
             g_loss = -logq_obj
-            g_optimizer.zero_grad()
-            g_loss.backward()
-            g_optimizer.step()
+            if itr % args.e_iters == 0:
+                g_optimizer.zero_grad()
+                g_loss.backward()
+                g_optimizer.step()
 
             if args.clamp:
                 g.logsigma.data.clamp_(np.log(.01), np.log(.0101))
@@ -412,7 +427,7 @@ def main(args):
                     itr, logp_obj.item(), logq_obj.item(), g.logsigma.exp().item(),
                     ld.mean().item(), lg_detach.mean().item(), g_error_entropy.item(),
                     sgld_lr, sgld_lr_z, sgld_lr_zne, stepsize))
-                if args.pg_inf:
+                if args.pg_inf or args.ub_inf:
                     print("    log sigma = {}, {}".format(post_logsigma.logsigma.exp().mean().item(),
                                                           post_logsigma.logsigma.exp().std().item()))
 
@@ -430,13 +445,13 @@ def main(args):
 
                     ax = plt.subplot(1, 4, 3, aspect="equal")
                     logp_net.cpu()
-                    utils.plt_flow_density(logp_net, ax, low=x_d.min().item(), high=x_d.max().item())
+                    utils.plt_flow_density(lambda x: logp_net(x), ax, low=x_d.min().item(), high=x_d.max().item())
                     plt.savefig("/{}/{}.png".format(args.save_dir, itr))
                     logp_net.to(device)
 
                     ax = plt.subplot(1, 4, 4, aspect="equal")
                     logp_net.cpu()
-                    utils.plt_flow_density(logp_net, ax, low=x_d.min().item(), high=x_d.max().item(), exp=False)
+                    utils.plt_flow_density(lambda x: logp_net(x), ax, low=x_d.min().item(), high=x_d.max().item(), exp=False)
                     plt.savefig("/{}/{}.png".format(args.save_dir, itr))
                     logp_net.to(device)
 
@@ -627,20 +642,20 @@ def get_models(args):
             nn.LeakyReLU(.2, inplace=True),
             nn.utils.weight_norm(nn.Linear(args.h_dim, args.h_dim)),
             nn.LeakyReLU(.2, inplace=True),
-            nn.Linear(args.h_dim, 1, bias=False)
+            nn.utils.weight_norm(nn.Linear(args.h_dim, 1, bias=False))
         )
 
         class G(nn.Module):
             def __init__(self):
                 super().__init__()
                 self.generator = nn.Sequential(
-                    nn.Linear(args.noise_dim, args.h_dim, bias=False),
+                    nn.Linear(args.noise_dim, args.h_dim),#, bias=False),
                     nn.BatchNorm1d(args.h_dim, affine=True),
                     nn.ReLU(inplace=True),
-                    nn.Linear(args.h_dim, args.h_dim, bias=False),
+                    nn.Linear(args.h_dim, args.h_dim),# bias=False),
                     nn.BatchNorm1d(args.h_dim, affine=True),
                     nn.ReLU(inplace=True),
-                    nn.Linear(args.h_dim, args.data_dim, bias=False)
+                    nn.Linear(args.h_dim, args.data_dim, bias=True)
                 )
                 self.logsigma = nn.Parameter((torch.zeros(1, ) + .01).log())
 
@@ -803,6 +818,7 @@ if __name__ == "__main__":
     parser.add_argument("--clamp", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--sv_bound", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--pg_inf", action="store_true", help="Run VAT instead of JEM")
+    parser.add_argument("--ub_inf", action="store_true", help="Run VAT instead of JEM")
 
     args = parser.parse_args()
     if args.dataset in TOY_DSETS:
