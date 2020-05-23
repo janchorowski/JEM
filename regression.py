@@ -45,6 +45,7 @@ def get_data(args):
 
     n_test = int(x.shape[0] * args.test_frac)
     inds = list(range(x.shape[0]))
+    np.random.seed(args.seed)
     np.random.shuffle(inds)
 
     train_inds = np.array(inds[:-n_test])
@@ -377,6 +378,7 @@ if __name__ == "__main__":
     parser.add_argument("--ebm", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--ebr", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--normalize", action="store_true", help="Run VAT instead of JEM")
+    parser.add_argument("--seed", type=int, default=1234, help="Iterations between print")
 
     args = parser.parse_args()
     main(args)
