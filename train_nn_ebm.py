@@ -73,7 +73,7 @@ class Swish(nn.Module):
 
 
 class NeuralNet(nn.Module):
-    def __init__(self, input_size, hidden_size, extra_layers=2, use_vbnorm=False, ref_x=None, n_channels_in=1):
+    def __init__(self, input_size, hidden_size, extra_layers, use_vbnorm=False, ref_x=None, n_channels_in=1):
         super(NeuralNet, self).__init__()
         self.layers = nn.ModuleList()
         self.use_vbnorm = use_vbnorm
@@ -262,16 +262,16 @@ class F(nn.Module):
             self.f = ConvLarge(avg_pool_kernel=args.cnn_avg_pool_kernel)
             self.f.last_dim = 128
         elif use_nn:
-            hidden_units = 500
+            hidden_units = args.nn_hidden_size
 
             use_vbnorm = False
             if args.vbnorm:
                 use_vbnorm = True
 
             if input_size is None:
-                self.f = NeuralNet(im_sz**2, hidden_units, extra_layers=2, use_vbnorm=use_vbnorm, ref_x=ref_x, n_channels_in=args.n_ch)
+                self.f = NeuralNet(im_sz**2, hidden_units, extra_layers=args.extra_layers, use_vbnorm=use_vbnorm, ref_x=ref_x, n_channels_in=args.n_ch)
             else:
-                self.f = NeuralNet(input_size, hidden_units, extra_layers=2, use_vbnorm=use_vbnorm, ref_x=ref_x, n_channels_in=args.n_ch)
+                self.f = NeuralNet(input_size, hidden_units, extra_layers=args.extra_layers, use_vbnorm=use_vbnorm, ref_x=ref_x, n_channels_in=args.n_ch)
             self.f.last_dim = hidden_units
         else:
             self.f = wideresnet.Wide_ResNet(depth, width, norm=norm, dropout_rate=dropout_rate, input_channels=args.n_ch)
@@ -353,7 +353,6 @@ def init_random(args, bs):
 def get_model_and_buffer(args, device, sample_q, ref_x=None):
     model_cls = F if args.uncond else CCF
     args.input_size = None
-    use_nn = args.use_nn
     # if args.dataset == "mnist" or args.dataset == "moons":
         # use_nn=False # testing only
     if args.dataset == "mnist":
@@ -366,7 +365,7 @@ def get_model_and_buffer(args, device, sample_q, ref_x=None):
         args.input_size = 2
     f = model_cls(args.depth, args.width, args.norm, dropout_rate=args.dropout_rate,
                   n_classes=args.n_classes, im_sz=args.im_sz, input_size=args.input_size,
-                  use_nn=use_nn, ref_x=ref_x, use_cnn=args.use_cnn)
+                  use_nn=args.use_nn, ref_x=ref_x, use_cnn=args.use_cnn)
     if not args.uncond:
         assert args.buffer_size % args.n_classes == 0, "Buffer size must be divisible by args.n_classes"
     if args.load_path is None:
@@ -1565,6 +1564,8 @@ if __name__ == "__main__":
     parser.add_argument("--sgld_momentum", type=float, default=0.9)
     parser.add_argument("--cnn_avg_pool_kernel", type=int, default=6)
     parser.add_argument("--use_nn", action="store_true", help="Use NN (4 layer MLP)")
+    parser.add_argument("--nn_hidden_size", type=int, default=500)
+    parser.add_argument("--nn_extra_layers", type=int, default=2, help="2 for a 4-layer MLP (this is only middle layers, excludes input and output layers)")
     parser.add_argument("--buffer_reinit_from_data", action="store_true", help="For PCD replay buffer, reinitialize from data points rather than random points")
     parser.add_argument("--pgan", action="store_true", help="Use PGAN to generate samples")
     parser.add_argument("--h_dim", type=int, default=100)
