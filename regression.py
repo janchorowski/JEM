@@ -171,7 +171,7 @@ def main(args):
                 xy = torch.cat([x, y[:, None]], dim=1)
                 logp_y_given_x_real = net(xy)
 
-                y_init = init_dist.sample((x.size(0),))[:, yind][:, None]#.sample_n(x.size(0))[:, yind][:, None]
+                y_init = init_dist.sample((x.size(0),))[:, yind][:, None].to(x.device)#.sample_n(x.size(0))[:, yind][:, None]
                 log_fn = lambda y: net(torch.cat([x, y], dim=1)).squeeze()
                 y_fake, ar, stepsize = hmc.get_ebm_samples(log_fn, y_init, args.mcmc_steps, 1, 5, stepsize, 1, .02, .67)
                 xy_fake = torch.cat([x, y_fake], dim=1)
@@ -228,7 +228,7 @@ def main(args):
         def plot_energy_fn(x, y, n_samples=100):
             plt.clf()
             y_e = torch.arange(n_samples).float() / (n_samples - 1) * (ymax - ymin) + ymin
-            y_e = y_e[:, None]
+            y_e = y_e[:, None].to(x.device)
             x_r = x[None].repeat_interleave(n_samples, dim=0)
             xy = torch.cat([x_r, y_e], dim=1)
             logp_y_given_x = net(xy)
@@ -322,7 +322,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser("Energy Based Models and Shit")
     #cifar
     parser.add_argument("--dataset", type=str, default="concrete")#, choices=["mnist", "moons", "circles"])
-    parser.add_argument("--loss", type=str, default="concrete")#, choices=["mnist", "moons", "circles"])
+    parser.add_argument("--loss", type=str, default="ml")#, choices=["mnist", "moons", "circles"])
     parser.add_argument("--mode", type=str, default="reverse_kl")
     parser.add_argument("--data_root", type=str, default="../data")
     # optimization
