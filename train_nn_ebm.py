@@ -269,9 +269,9 @@ class F(nn.Module):
                 use_vbnorm = True
 
             if input_size is None:
-                self.f = NeuralNet(im_sz**2, hidden_units, extra_layers=args.extra_layers, use_vbnorm=use_vbnorm, ref_x=ref_x, n_channels_in=args.n_ch)
+                self.f = NeuralNet(im_sz**2, hidden_units, extra_layers=args.nn_extra_layers, use_vbnorm=use_vbnorm, ref_x=ref_x, n_channels_in=args.n_ch)
             else:
-                self.f = NeuralNet(input_size, hidden_units, extra_layers=args.extra_layers, use_vbnorm=use_vbnorm, ref_x=ref_x, n_channels_in=args.n_ch)
+                self.f = NeuralNet(input_size, hidden_units, extra_layers=args.nn_extra_layers, use_vbnorm=use_vbnorm, ref_x=ref_x, n_channels_in=args.n_ch)
             self.f.last_dim = hidden_units
         else:
             self.f = wideresnet.Wide_ResNet(depth, width, norm=norm, dropout_rate=dropout_rate, input_channels=args.n_ch)
