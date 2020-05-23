@@ -2,10 +2,10 @@ import argparse
 import torch
 import torch.nn as nn
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch.distributions as distributions
-import torchvision
-import torchvision.transforms as transforms
 import torch.utils
 import torch.utils.data
 import hmc
@@ -85,38 +85,32 @@ def main(args):
     utils.makedirs(args.save_dir)
     utils.makedirs("{}/figs_test".format(args.save_dir))
     utils.makedirs("{}/figs_train".format(args.save_dir))
+    logf = open("{}/log.txt".format(args.save_dir), 'w')
     dload_train, dload_test, init_dist, unnormalize, yind, ymin, ymax = get_data(args)
     hd = args.h_dim
     in_dim = args.data_dim + 1 if args.ebm or args.ebr else args.data_dim
     net = nn.Sequential(
         nn.Linear(in_dim, hd),
-        #nn.ELU(),
         nn.LeakyReLU(.2),
-        #nn.ReLU(),
         nn.Linear(hd, hd),
-        #nn.ELU(),
         nn.LeakyReLU(.2),
-        #nn.ReLU(),
-        nn.Linear(hd ,hd),
-        #nn.ELU(),
+        nn.Linear(hd, hd),
         nn.LeakyReLU(.2),
-        #nn.ReLU(),
         nn.Linear(hd, 1)
     )
 
 
 
     optimizer = torch.optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-
+    net.to(device)
     stepsize = 1. / 10
-
     rmse_fn = lambda l: torch.cat(l).mean() ** .5
     if args.ebm:
         def loss_fn(x, y, stepsize=1.):
             xy = torch.cat([x, y[:, None]], dim=1)
             logp_y_given_x_real = net(xy)
 
-            xy_init = init_dist.sample((x.size(0),))#sample_n(x.size(0))
+            xy_init = init_dist.sample((x.size(0),)).to(x.device)#sample_n(x.size(0))
             log_fn = lambda xy: net(xy).squeeze()
             xy_fake, ar, stepsize = hmc.get_ebm_samples(log_fn, xy_init, args.mcmc_steps, 1, 5, stepsize, 1, .02, .67)
             logp_y_given_x_fake = net(xy_fake)
@@ -128,7 +122,7 @@ def main(args):
 
         def predict_fn(x, stepsize=.1, iters=100, n_samples=10, return_all=False):
             y_init = torch.arange(n_samples).float() / (n_samples - 1) * (ymax - ymin) + ymin
-            y_init = y_init.repeat(x.size(0))[:, None]
+            y_init = y_init.repeat(x.size(0))[:, None].to(x.device)
             y = nn.Parameter(y_init)
             optim = torch.optim.Adam([y], stepsize)
             x_r = x.repeat_interleave(n_samples, dim=0)
@@ -153,7 +147,7 @@ def main(args):
         def plot_energy_fn(x, y, n_samples=100):
             plt.clf()
             y_e = torch.arange(n_samples).float() / (n_samples - 1) * (ymax - ymin) + ymin
-            y_e = y_e[:, None]
+            y_e = y_e[:, None].to(x.device)
             x_r = x[None].repeat_interleave(n_samples, dim=0)
             xy = torch.cat([x_r, y_e], dim=1)
             logp_y_given_x = net(xy)
@@ -208,7 +202,7 @@ def main(args):
 
         def predict_fn(x, stepsize=.1, iters=100, n_samples=10, return_all=False):
             y_init = torch.arange(n_samples).float() / (n_samples - 1) * (ymax - ymin) + ymin
-            y_init = y_init.repeat(x.size(0))[:, None]
+            y_init = y_init.repeat(x.size(0))[:, None].to(x.device)
             y = nn.Parameter(y_init)
             optim = torch.optim.Adam([y], stepsize)
             x_r = x.repeat_interleave(n_samples, dim=0)
@@ -303,13 +297,17 @@ def main(args):
         plt.plot(test_stats, c='r', label='test')
         plt.legend()
         plt.savefig("{}/rmse.png".format(args.save_dir))
-
-        print("{} | {} | rmse train {}, rmse test {}, stepsize = {}".format(epoch, i,
-                                                                            rmse_train.item(), rmse_test.item(),
-                                                                            stepsize))
+        logs = "Epoch {} | rmse train {}, rmse test {}".format(epoch, rmse_train.item(), rmse_test.item())
+        print(logs)
+        logf.write(logs + '\n')
         if args.ebm or args.ebr:
-            print("{} | {} | real = {:.4f}, fake = {:.4f}, diff = {:.4f}".format(epoch, i, rvals['real'], rvals['fake'],
-                                                                                 rvals['real'] - rvals['fake']))
+            logs = "{} | {} | real = {:.4f}, fake = {:.4f}, diff = {:.4f}, stepsize = {}".format(epoch, i,
+                                                                                                 rvals['real'],
+                                                                                                 rvals['fake'],
+                                                                                                 rvals['real'] - rvals['fake'],
+                                                                                                 stepsize)
+            print(logs)
+            logf.write(logs + '\n')
             plot_energy_fn(x[0], y[0])
             plt.savefig("{}/figs_test/epoch_{}.png".format(args.save_dir, epoch))
 
