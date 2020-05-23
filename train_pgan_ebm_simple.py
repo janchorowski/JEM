@@ -10,6 +10,7 @@ import torchvision
 import sklearn.datasets as skdatasets
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 import matplotlib
+import json
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import utils
@@ -254,6 +255,10 @@ def main(args):
     z_sgld_chain_dir = "{}/{}_chain".format(args.save_dir, "z_only_sgld_chain")
     utils.makedirs(z_sgld_chain_dir)
     logp_net, g = get_models(args)
+
+    with open("{}/args.txt".format(args.save_dir), 'w') as f:
+        json.dump(args.__dict__, f)
+
 
     e_optimizer = torch.optim.Adam(logp_net.parameters(), lr=args.lr, betas=[args.beta1, args.beta2], weight_decay=args.weight_decay)
     g_optimizer = torch.optim.Adam(g.parameters(), lr=args.glr, betas=[args.beta1, args.beta2], weight_decay=args.weight_decay)
