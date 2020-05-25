@@ -28,7 +28,7 @@ import json
 from tqdm import tqdm
 t.backends.cudnn.benchmark = True
 t.backends.cudnn.enabled = True
-seed = 1
+# seed = 1
 # im_sz = 32
 # n_ch = 3
 from sklearn import datasets
@@ -531,7 +531,7 @@ def get_data(args):
     full_train = dataset_fn(True, transform_train)
     all_inds = list(range(len(full_train)))
     # set seed
-    np.random.seed(1234)
+    np.random.seed(args.dataset_seed)
     # shuffle
     np.random.shuffle(all_inds)
     # seperate out validation set
@@ -735,9 +735,9 @@ def main(args):
     if args.print_to_log:
         sys.stdout = open(f'{args.save_dir}/log.txt', 'w')
 
-    t.manual_seed(seed)
+    t.manual_seed(args.t_seed)
     if t.cuda.is_available():
-        t.cuda.manual_seed_all(seed)
+        t.cuda.manual_seed_all(args.t_seed)
 
     if args.dataset == "mnist":
         args.n_ch = 1
@@ -1592,6 +1592,8 @@ if __name__ == "__main__":
     parser.add_argument("--sgld_steps", type=int, default=100, help="for PGAN")
     parser.add_argument("--l2_energy_reg", type=float, default=0., help="Regularize energy outputs")
     parser.add_argument("--l2_energy_reg_neg", action="store_true", help="Regularize energy outputs on negative samples (x_q) as well")
+    parser.add_argument("--dataset_seed", type=int, default=1234, help="for selecting data")
+    parser.add_argument("--t_seed", type=int, default=1, help="for Torch")
 
 
     args = parser.parse_args()
