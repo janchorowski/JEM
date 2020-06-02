@@ -349,11 +349,11 @@ def grad_vals(m):
 
 def init_random(args, bs):
     if args.dataset == "moons":
-        out = t.FloatTensor(bs, args.input_size).uniform_(-1,1)
+        out = t.FloatTensor(bs, args.input_size).uniform_(-1,1) / args.temper_init
     elif args.dataset == "mnist":
-        out = t.FloatTensor(bs, args.n_ch, args.im_sz, args.im_sz).uniform_(-3, 3)
+        out = t.FloatTensor(bs, args.n_ch, args.im_sz, args.im_sz).uniform_(-3, 3) / args.temper_init
     else:
-        out = t.FloatTensor(bs, args.n_ch, args.im_sz, args.im_sz).uniform_(-1, 1)
+        out = t.FloatTensor(bs, args.n_ch, args.im_sz, args.im_sz).uniform_(-1, 1) / args.temper_init
     return out
 
 
@@ -1602,6 +1602,7 @@ if __name__ == "__main__":
     parser.add_argument("--l2_energy_reg_neg", action="store_true", help="Regularize energy outputs on negative samples (x_q) as well")
     parser.add_argument("--dataset_seed", type=int, default=1234, help="for selecting data")
     parser.add_argument("--t_seed", type=int, default=1, help="for Torch")
+    parser.add_argument("--temper_init", type=float, default=3.0, help="Reduces the range of the initial uniform dist, may allow for more stable sampling")
 
 
     args = parser.parse_args()
