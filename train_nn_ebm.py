@@ -350,6 +350,8 @@ def grad_vals(m):
 def init_random(args, bs):
     if args.dataset == "moons":
         out = t.FloatTensor(bs, args.input_size).uniform_(-1,1)
+    elif args.dataset == "mnist":
+        out = t.FloatTensor(bs, args.n_ch, args.im_sz, args.im_sz).uniform_(-3, 3)
     else:
         out = t.FloatTensor(bs, args.n_ch, args.im_sz, args.im_sz).uniform_(-1, 1)
     return out
