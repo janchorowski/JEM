@@ -264,3 +264,14 @@ def get_ebm_latent_samples(netEBM, netG, z_init, eps_init, sigma,
         logjointHist[:, i] = -current_U.squeeze()
     acceptRate = acceptHist.mean(dim=1)
     return samples_z, samples_eps, acceptRate, stepsize
+
+
+def sgld_sample(logp_fn, x_init, l=1., e=.01, n_steps=100):
+    x_k = torch.autograd.Variable(x_init, requires_grad=True)# .cuda()  # hack
+    # sgld
+    lrs = [l for _ in range(n_steps)]
+    for this_lr in lrs:
+        f_prime = torch.autograd.grad(logp_fn(x_k).sum(), [x_k], retain_graph=True)[0]
+        x_k.data += this_lr * f_prime + torch.randn_like(x_k) * e
+    final_samples = x_k.detach()
+    return final_samples
