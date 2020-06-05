@@ -520,7 +520,7 @@ def get_data(args):
         elif args.dataset == "mnist":
             return tv.datasets.MNIST(root=args.data_root, transform=transform, download=True, train=train)
         elif args.dataset == "moons":
-            data,labels = datasets.make_moons(n_samples=args.n_moons_data, noise=.1)
+            data,labels = datasets.make_moons(n_samples=args.n_moons_data, noise=args.moons_noise)
 
             # plt.scatter(data[:,0],data[:,1])
             # plt.show()
@@ -750,7 +750,7 @@ def main(args):
         args.n_ch = 1
         args.im_sz = 28
     elif args.dataset == "moons":
-        args.n_ch = None
+        args.n_ch = 1
         args.im_sz = None
     else:
         args.n_ch = 3
@@ -1437,7 +1437,7 @@ def main(args):
             f.train()
 
             if args.dataset == "moons" and correct >= best_valid_acc:
-                data,labels= datasets.make_moons(args.n_moons_data, noise=0.1)
+                data,labels= datasets.make_moons(args.n_moons_data, noise=args.moons_noise)
                 data = t.Tensor(data)
                 preds = f.classify(data.to(device))
                 preds = preds.argmax(dim=1)
@@ -1529,7 +1529,8 @@ if __name__ == "__main__":
     # parser.add_argument("--vat", type=bool, default=False)
     parser.add_argument("--vat", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--vat_weight", type=float, default=1.0)
-    parser.add_argument("--n_moons_data", type=float, default=500)
+    parser.add_argument("--n_moons_data", type=int, default=500, help="how many data points in moon dataset")
+    parser.add_argument("--moons_noise", type=float, default=0.1, help="how much noise to add to moons dataset")
     parser.add_argument("--class_cond_label_prop", action="store_true", help="Enforce consistency/LDS between data and samples too")
     parser.add_argument("--label_prop_n_steps", type=int, default=1,
                         help="number of steps of SGLD sampler for label prop idea")
