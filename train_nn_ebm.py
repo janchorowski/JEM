@@ -348,7 +348,7 @@ def grad_vals(m):
 
 
 def init_random(args, bs):
-    if args.dataset == "moons":
+    if (args.dataset == "moons" or args.dataset == "rings"):
         out = t.FloatTensor(bs, args.input_size).uniform_(-1,1) / args.temper_init
     elif args.dataset == "mnist":
         out = t.FloatTensor(bs, args.n_ch, args.im_sz, args.im_sz).uniform_(-3, 3) / args.temper_init
@@ -360,7 +360,7 @@ def init_random(args, bs):
 def get_model_and_buffer(args, device, sample_q, ref_x=None):
     model_cls = F if args.uncond else CCF
     args.input_size = None
-    # if args.dataset == "mnist" or args.dataset == "moons":
+    # if args.dataset == "mnist" or (args.dataset == "moons" or args.dataset == "rings"):
         # use_nn=False # testing only
     if args.dataset == "mnist":
         args.data_size = (1, 28, 28)
@@ -368,7 +368,7 @@ def get_model_and_buffer(args, device, sample_q, ref_x=None):
         args.data_dim = 32 * 32 * 3
         args.data_size = (3, 32, 32)
 
-    if args.dataset == "moons":
+    if (args.dataset == "moons" or args.dataset == "rings"):
         args.input_size = 2
     f = model_cls(args.depth, args.width, args.norm, dropout_rate=args.dropout_rate,
                   n_classes=args.n_classes, im_sz=args.im_sz, input_size=args.input_size,
@@ -467,7 +467,7 @@ def get_data(args):
                  lambda x: x + args.mnist_sigma * t.randn_like(x)
                  ]
             )
-    elif args.dataset == "moons":
+    elif (args.dataset == "moons" or args.dataset == "rings"):
         transform_train = None
     else:
         transform_train = tr.Compose(
@@ -504,7 +504,7 @@ def get_data(args):
                  # lambda x: x + args.mnist_sigma * t.randn_like(x)
                  ]
             )
-    elif args.dataset == "moons":
+    elif (args.dataset == "moons" or args.dataset == "rings"):
         transform_test = None
     else:
         transform_test = tr.Compose(
@@ -519,8 +519,13 @@ def get_data(args):
             return tv.datasets.CIFAR100(root=args.data_root, transform=transform, download=True, train=train)
         elif args.dataset == "mnist":
             return tv.datasets.MNIST(root=args.data_root, transform=transform, download=True, train=train)
-        elif args.dataset == "moons":
-            data,labels = datasets.make_moons(n_samples=args.n_moons_data, noise=args.moons_noise)
+        elif (args.dataset == "moons" or args.dataset == "rings"):
+            if args.dataset == "moons":
+                data, labels = datasets.make_moons(n_samples=args.n_moons_data, noise=args.moons_noise, random_state=np.random.RandomState(args.moons_data_seed))
+            elif args.dataset == "rings":
+                data, labels = datasets.make_circles(n_samples=args.n_rings_data, noise=args.rings_noise, random_state=np.random.RandomState(args.rings_data_seed))
+
+
 
             # plt.scatter(data[:,0],data[:,1])
             # plt.show()
@@ -554,6 +559,7 @@ def get_data(args):
     if args.labels_per_class > 0:
         for i in range(args.n_classes):
             train_labeled_inds.extend(train_inds[train_labels == i][:args.labels_per_class])
+            #
             other_inds.extend(train_inds[train_labels == i][args.labels_per_class:])
     else:
         train_labeled_inds = train_inds
@@ -569,9 +575,9 @@ def get_data(args):
         inds=valid_inds)
     dload_train = DataLoader(dset_train, batch_size=args.batch_size, shuffle=True, num_workers=4, drop_last=True)
     dload_train_vbnorm = DataLoader(dset_train, batch_size=args.vbnorm_batch_size, shuffle=False, num_workers=4, drop_last=True)
-    dload_train_labeled = DataLoader(dset_train_labeled, batch_size=args.batch_size, shuffle=True, num_workers=4, drop_last=True)
+    dload_train_labeled = DataLoader(dset_train_labeled, batch_size=min(args.batch_size, len(dset_train_labeled)), shuffle=True, num_workers=4, drop_last=True)
     dload_train_labeled = cycle(dload_train_labeled)
-    dload_train_labeled_static = DataLoader(dset_train_labeled, batch_size=args.batch_size, shuffle=False, num_workers=4, drop_last=True)
+    dload_train_labeled_static = DataLoader(dset_train_labeled, batch_size=min(args.batch_size, len(dset_train_labeled)), shuffle=False, num_workers=4, drop_last=True)
     dload_train_labeled_static = cycle(dload_train_labeled_static)
     dset_test = dataset_fn(False, transform_test)
     dload_valid = DataLoader(dset_valid, batch_size=100, shuffle=False, num_workers=4, drop_last=False)
@@ -591,7 +597,7 @@ def get_sample_q(args, device):
             assert not args.uncond, "Can't drawn conditional samples without giving me y"
         buffer_samples = replay_buffer[inds]
         random_samples = init_random(args, bs)
-        if args.dataset == "moons":
+        if (args.dataset == "moons" or args.dataset == "rings"):
             choose_random = (t.rand(bs) < args.reinit_freq).float()[:, None]
         else:
             choose_random = (t.rand(bs) < args.reinit_freq).float()[:, None, None, None]
@@ -749,7 +755,7 @@ def main(args):
     if args.dataset == "mnist":
         args.n_ch = 1
         args.im_sz = 28
-    elif args.dataset == "moons":
+    elif (args.dataset == "moons" or args.dataset == "rings"):
         args.n_ch = 1
         args.im_sz = None
     else:
@@ -1425,39 +1431,57 @@ def main(args):
             f.eval()
             with t.no_grad():
                 # validation set
+                best_valid_found = False
                 correct, loss = eval_classification(f, dload_valid, device)
                 print("Epoch {}: Valid Loss {}, Valid Acc {}".format(epoch, loss, correct))
                 if correct > best_valid_acc:
                     best_valid_acc = correct
                     print("Best Valid!: {}".format(correct))
+                    best_valid_found = True
                     checkpoint(f, replay_buffer, "best_valid_ckpt.pt", args, device)
                 # test set
                 correct, loss = eval_classification(f, dload_test, device)
                 print("Epoch {}: Test Loss {}, Test Acc {}".format(epoch, loss, correct))
             f.train()
 
-            if args.dataset == "moons" and correct >= best_valid_acc:
-                data,labels= datasets.make_moons(args.n_moons_data, noise=args.moons_noise)
-                data = t.Tensor(data)
-                preds = f.classify(data.to(device))
-                preds = preds.argmax(dim=1)
-                preds = preds.cpu()
-                data1 = data[preds == 0]
-                plt.scatter(data1[:,0], data1[:,1], c="orange")
-                data2 = data[preds == 1]
-                plt.scatter(data2[:,0], data2[:,1], c="blue")
+            if (args.dataset == "moons" or args.dataset == "rings") and best_valid_found:
+                def vis(savefile, random_state=None):
+                    plt.clf()
+                    if args.dataset == "moons":
+                        data, labels = datasets.make_moons(args.n_moons_data, noise=args.moons_noise, random_state=random_state)
+                    elif args.dataset == "rings":
+                        data, labels = datasets.make_circles(
+                            n_samples=args.n_rings_data, noise=args.rings_noise,
+                            random_state=np.random.RandomState(
+                                args.rings_data_seed))
+                    data = t.Tensor(data)
+                    preds = f.classify(data.to(device))
+                    preds = preds.argmax(dim=1)
+                    preds = preds.cpu()
+                    data1 = data[preds == 0]
+                    plt.scatter(data1[:,0], data1[:,1], c="orange")
+                    data2 = data[preds == 1]
+                    plt.scatter(data2[:,0], data2[:,1], c="blue")
 
-                labeled_pts = dset_train_labeled[:][0]
-                labeled_pts_labels = dset_train_labeled[:][1]
-                labeled0 = labeled_pts[labeled_pts_labels == 0]
-                labeled1 = labeled_pts[labeled_pts_labels == 1]
-                # Note labels right now not forced to be class balanced
-                # print(sum(labeled_pts_labels))
-                plt.scatter(labeled0[:,0], labeled0[:,1], c="green")
-                plt.scatter(labeled1[:,0], labeled1[:,1], c="red")
-                print("Saving figure")
-                plt.savefig("moonsvis.png")
-                # plt.show()
+                    labeled_pts = dset_train_labeled[:][0]
+                    labeled_pts_labels = dset_train_labeled[:][1]
+                    labeled0 = labeled_pts[labeled_pts_labels == 0]
+                    labeled1 = labeled_pts[labeled_pts_labels == 1]
+                    # Note labels right now not forced to be class balanced
+                    # print(sum(labeled_pts_labels))
+                    plt.scatter(labeled0[:,0], labeled0[:,1], c="green")
+                    plt.scatter(labeled1[:,0], labeled1[:,1], c="red")
+                    print("Saving figure")
+                    plt.savefig(savefile)
+                    # plt.show()
+                if args.dataset == "moons":
+                    vis(savefile="moonvis_train.png", random_state=np.random.RandomState(args.moons_data_seed))
+                    vis(savefile="moonvis_test.png")
+                elif args.dataset == "rings":
+                    vis(savefile="ringsvis_train.png",
+                        random_state=np.random.RandomState(
+                            args.rings_data_seed))
+                    vis(savefile="ringsvis_test.png")
 
         checkpoint(f, replay_buffer, "last_ckpt.pt", args, device)
 
@@ -1466,7 +1490,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Energy Based Models and Shit")
     #cifar
-    parser.add_argument("--dataset", type=str, default="moons", choices=["cifar10", "svhn", "mnist", "cifar100", "moons"])
+    parser.add_argument("--dataset", type=str, default="moons", choices=["cifar10", "svhn", "mnist", "cifar100", "moons", "rings"])
     parser.add_argument("--data_root", type=str, default="../data")
     # optimization
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -1529,8 +1553,15 @@ if __name__ == "__main__":
     # parser.add_argument("--vat", type=bool, default=False)
     parser.add_argument("--vat", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--vat_weight", type=float, default=1.0)
-    parser.add_argument("--n_moons_data", type=int, default=500, help="how many data points in moon dataset")
+    parser.add_argument("--n_moons_data", type=int, default=1000, help="how many data points in moon dataset")
     parser.add_argument("--moons_noise", type=float, default=0.1, help="how much noise to add to moons dataset")
+    parser.add_argument("--moons_data_seed", type=int, default=1234, help="for training dataset")
+    parser.add_argument("--n_rings_data", type=int, default=1000,
+                        help="how many data points in rings dataset")
+    parser.add_argument("--rings_noise", type=float, default=0.03,
+                        help="how much noise to add to rings dataset")
+    parser.add_argument("--rings_data_seed", type=int, default=1234,
+                        help="for training dataset")
     parser.add_argument("--class_cond_label_prop", action="store_true", help="Enforce consistency/LDS between data and samples too")
     parser.add_argument("--label_prop_n_steps", type=int, default=1,
                         help="number of steps of SGLD sampler for label prop idea")
@@ -1603,13 +1634,13 @@ if __name__ == "__main__":
     parser.add_argument("--l2_energy_reg_neg", action="store_true", help="Regularize energy outputs on negative samples (x_q) as well")
     parser.add_argument("--dataset_seed", type=int, default=1234, help="for selecting data")
     parser.add_argument("--t_seed", type=int, default=1, help="for Torch")
-    parser.add_argument("--temper_init", type=float, default=3.0, help="Reduces the range of the initial uniform dist, may allow for more stable sampling")
+    parser.add_argument("--temper_init", type=float, default=1.0, help="Reduces the range of the initial uniform dist, may allow for more stable sampling")
 
 
     args = parser.parse_args()
     if args.dataset == "cifar100":
         args.n_classes = 100
-    elif args.dataset == "moons":
+    elif (args.dataset == "moons" or args.dataset == "rings"):
         args.n_classes = 2
     else:
         args.n_classes = 10
