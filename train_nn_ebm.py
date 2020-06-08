@@ -32,6 +32,8 @@ t.backends.cudnn.enabled = True
 # im_sz = 32
 # n_ch = 3
 from sklearn import datasets
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from vbnorm import VirtualBatchNormNN
 # from batch_renormalization import BatchRenormalizationNN
@@ -567,7 +569,7 @@ def get_data(args):
     dset_valid = DataSubset(
         dataset_fn(True, transform_test),
         inds=valid_inds)
-    dload_train = DataLoader(dset_train, batch_size=args.batch_size, shuffle=True, num_workers=4, drop_last=True)
+    dload_train = DataLoader(dset_train, batch_size=args.ul_batch_size, shuffle=True, num_workers=4, drop_last=True)
     dload_train_vbnorm = DataLoader(dset_train, batch_size=args.vbnorm_batch_size, shuffle=False, num_workers=4, drop_last=True)
     dload_train_labeled = DataLoader(dset_train_labeled, batch_size=args.batch_size, shuffle=True, num_workers=4, drop_last=True)
     dload_train_labeled = cycle(dload_train_labeled)
@@ -611,7 +613,7 @@ def get_sample_q(args, device):
         """
         f.eval()
         # get batch size
-        bs = args.batch_size if y is None else y.size(0)
+        bs = args.ul_batch_size if y is None else y.size(0)
         # generate initial samples and buffer inds of those samples (if buffer is used)
         if seed_batch is not None:
             init_sample, buffer_inds = seed_batch, []
@@ -1401,17 +1403,23 @@ def main(args):
 
                 cur_iter += 1
 
-                if cur_iter % 100 == 0:
+                if cur_iter % args.viz_every == 0:
                     if args.plot_uncond:
                         if args.class_cond_p_x_sample:
                             assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
-                            y_q = t.randint(0, args.n_classes, (args.batch_size,)).to(device)
+                            y_q = t.randint(0, args.n_classes, (args.ul_batch_size,)).to(device)
                             x_q = sample_q(f, replay_buffer, y=y_q, optim_sgld=optim_sgld,
                                            seed_batch=seed_batch, momentum_buffer=momentum_buffer, data=x_p_d)
                         else:
                             x_q = sample_q(f, replay_buffer, optim_sgld=optim_sgld,
                                            seed_batch=seed_batch, momentum_buffer=momentum_buffer, data=x_p_d)
-                        plot('{}/x_q_{}_{:>06d}.png'.format(args.save_dir, epoch, i), x_q)
+                        if args.dataset == "moons":
+                            d = x_q.detach().cpu().numpy()
+                            plt.clf()
+                            plt.scatter(d[:, 0], d[:, 1], c="orange")
+                            plt.savefig('{}/x_q_{}_{:>06d}.png'.format(args.save_dir, epoch, i))
+                        else:
+                            plot('{}/x_q_{}_{:>06d}.png'.format(args.save_dir, epoch, i), x_q)
                     if args.plot_cond:  # generate class-conditional samples
                         y = t.arange(0, args.n_classes)[None].repeat(args.n_classes, 1).transpose(1, 0).contiguous().view(-1).to(device)
                         x_q_y = sample_q(f, replay_buffer, y=y, optim_sgld=optim_sgld,
@@ -1431,32 +1439,34 @@ def main(args):
                     best_valid_acc = correct
                     print("Best Valid!: {}".format(correct))
                     checkpoint(f, replay_buffer, "best_valid_ckpt.pt", args, device)
+                    if args.dataset == "moons":
+                        data, labels = datasets.make_moons(args.n_moons_data, noise=args.moons_noise)
+                        data = t.Tensor(data)
+                        preds = f.classify(data.to(device))
+                        preds = preds.argmax(dim=1)
+                        preds = preds.cpu()
+                        data1 = data[preds == 0]
+                        plt.clf()
+                        plt.scatter(data1[:, 0], data1[:, 1], c="orange")
+                        data2 = data[preds == 1]
+                        plt.scatter(data2[:, 0], data2[:, 1], c="blue")
+
+                        labeled_pts = dset_train_labeled[:][0]
+                        labeled_pts_labels = dset_train_labeled[:][1]
+                        labeled0 = labeled_pts[labeled_pts_labels == 0]
+                        labeled1 = labeled_pts[labeled_pts_labels == 1]
+                        # Note labels right now not forced to be class balanced
+                        # print(sum(labeled_pts_labels))
+                        plt.scatter(labeled0[:, 0], labeled0[:, 1], c="green")
+                        plt.scatter(labeled1[:, 0], labeled1[:, 1], c="red")
+                        print("Saving figure")
+                        plt.savefig("{}/moonsvis.png".format(args.save_dir))
+
                 # test set
                 correct, loss = eval_classification(f, dload_test, device)
                 print("Epoch {}: Test Loss {}, Test Acc {}".format(epoch, loss, correct))
             f.train()
 
-            if args.dataset == "moons" and correct >= best_valid_acc:
-                data,labels= datasets.make_moons(args.n_moons_data, noise=args.moons_noise)
-                data = t.Tensor(data)
-                preds = f.classify(data.to(device))
-                preds = preds.argmax(dim=1)
-                preds = preds.cpu()
-                data1 = data[preds == 0]
-                plt.scatter(data1[:,0], data1[:,1], c="orange")
-                data2 = data[preds == 1]
-                plt.scatter(data2[:,0], data2[:,1], c="blue")
-
-                labeled_pts = dset_train_labeled[:][0]
-                labeled_pts_labels = dset_train_labeled[:][1]
-                labeled0 = labeled_pts[labeled_pts_labels == 0]
-                labeled1 = labeled_pts[labeled_pts_labels == 1]
-                # Note labels right now not forced to be class balanced
-                # print(sum(labeled_pts_labels))
-                plt.scatter(labeled0[:,0], labeled0[:,1], c="green")
-                plt.scatter(labeled1[:,0], labeled1[:,1], c="red")
-                print("Saving figure")
-                plt.savefig("moonsvis.png")
                 # plt.show()
 
         checkpoint(f, replay_buffer, "last_ckpt.pt", args, device)
@@ -1481,7 +1491,7 @@ if __name__ == "__main__":
     parser.add_argument("--labels_per_class", type=int, default=10,
                         help="number of labeled examples per class, if zero then use all labels")
     parser.add_argument("--optimizer", choices=["adam", "sgd"], default="adam")
-    # parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--ul_batch_size", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=10)
     parser.add_argument("--n_epochs", type=int, default=200)
     parser.add_argument("--warmup_iters", type=int, default=-1,
