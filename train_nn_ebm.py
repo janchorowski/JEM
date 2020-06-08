@@ -40,10 +40,11 @@ from vbnorm import VirtualBatchNormNN
 from batchrenorm import BatchRenorm1d
 from losses import VATLoss, LDSLoss, sliced_score_matching_vr, \
     sliced_score_matching, denoising_score_matching
+import regression_datasets
 
 import toy_data
 TOY_DSETS = ("moons", "circles", "8gaussians", "pinwheel", "2spirals", "checkerboard", "rings", "swissroll")
-
+REG_DSETS = {"concrete": 8, "protein": 9, "navy": 16, "power_plant": 4, "year": 90}
 
 class DataSubset(Dataset):
     def __init__(self, base_dataset, inds=None, size=-1):
@@ -263,7 +264,7 @@ class F(nn.Module):
         if input_size is not None:
             assert use_nn == True #input size is for non-images, ie non-conv.
         super(F, self).__init__()
-
+        print(input_size)
         if use_cnn:
             print("Using ConvLarge")
             self.f = ConvLarge(avg_pool_kernel=args.cnn_avg_pool_kernel)
@@ -285,6 +286,7 @@ class F(nn.Module):
 
         self.energy_output = nn.Linear(self.f.last_dim, 1)
         self.class_output = nn.Linear(self.f.last_dim, n_classes)
+        print(self.f)
 
     def forward(self, x, y=None):
         penult_z = self.f(x)
@@ -350,7 +352,7 @@ def grad_vals(m):
 
 
 def init_random(args, bs):
-    if (args.dataset == "moons" or args.dataset == "rings"):
+    if (args.dataset == "moons" or args.dataset == "rings") or args.dataset in REG_DSETS:
         out = t.FloatTensor(bs, args.input_size).uniform_(-1,1) / args.temper_init
     elif args.dataset == "mnist":
         out = t.FloatTensor(bs, args.n_ch, args.im_sz, args.im_sz).uniform_(-3, 3) / args.temper_init
@@ -372,6 +374,9 @@ def get_model_and_buffer(args, device, sample_q, ref_x=None):
 
     if (args.dataset == "moons" or args.dataset == "rings"):
         args.input_size = 2
+    if args.dataset in REG_DSETS:
+        args.input_size = REG_DSETS[args.dataset]
+        assert args.use_nn
     f = model_cls(args.depth, args.width, args.norm, dropout_rate=args.dropout_rate,
                   n_classes=args.n_classes, im_sz=args.im_sz, input_size=args.input_size,
                   use_nn=args.use_nn, ref_x=ref_x, use_cnn=args.use_cnn)
@@ -471,6 +476,8 @@ def get_data(args):
             )
     elif (args.dataset == "moons" or args.dataset == "rings"):
         transform_train = None
+    elif args.dataset in REG_DSETS:
+        transform_train = None
     else:
         transform_train = tr.Compose(
             [tr.Pad(4, padding_mode="reflect"),
@@ -508,6 +515,8 @@ def get_data(args):
             )
     elif (args.dataset == "moons" or args.dataset == "rings"):
         transform_test = None
+    elif args.dataset in REG_DSETS:
+        transform_test = None
     else:
         transform_test = tr.Compose(
             [tr.ToTensor(),
@@ -523,12 +532,9 @@ def get_data(args):
             return tv.datasets.MNIST(root=args.data_root, transform=transform, download=True, train=train)
         elif (args.dataset == "moons" or args.dataset == "rings"):
             if args.dataset == "moons":
-                data, labels = datasets.make_moons(n_samples=args.n_moons_data, noise=args.moons_noise, random_state=np.random.RandomState(args.moons_data_seed))
+                data, labels = datasets.make_moons(n_samples=args.n_moons_data, noise=args.moons_noise, random_state=np.random.RandomState(args.data_seed))
             elif args.dataset == "rings":
-                data, labels = datasets.make_circles(n_samples=args.n_rings_data, noise=args.rings_noise, random_state=np.random.RandomState(args.rings_data_seed))
-
-
-
+                data, labels = datasets.make_circles(n_samples=args.n_rings_data, noise=args.rings_noise, random_state=np.random.RandomState(args.data_seed))
             # plt.scatter(data[:,0],data[:,1])
             # plt.show()
             data = t.Tensor(data)
@@ -536,6 +542,13 @@ def get_data(args):
             labels = t.Tensor(labels)
             labels = labels.long()
             return t.utils.data.TensorDataset(data, labels)
+        elif args.dataset in REG_DSETS:
+            tr, te, ddim = regression_datasets.get_data(args.dataset, seed=args.data_seed)
+            if train:
+                return tr
+            else:
+                return te
+
         else:
             return tv.datasets.SVHN(root=args.data_root, transform=transform, download=True,
                                     split="train" if train else "test")
@@ -599,7 +612,7 @@ def get_sample_q(args, device):
             assert not args.uncond, "Can't drawn conditional samples without giving me y"
         buffer_samples = replay_buffer[inds]
         random_samples = init_random(args, bs)
-        if (args.dataset == "moons" or args.dataset == "rings"):
+        if (args.dataset == "moons" or args.dataset == "rings") or args.dataset in REG_DSETS:
             choose_random = (t.rand(bs) < args.reinit_freq).float()[:, None]
         else:
             choose_random = (t.rand(bs) < args.reinit_freq).float()[:, None, None, None]
@@ -758,6 +771,9 @@ def main(args):
         args.n_ch = 1
         args.im_sz = 28
     elif (args.dataset == "moons" or args.dataset == "rings"):
+        args.n_ch = 1
+        args.im_sz = None
+    elif args.dataset in REG_DSETS:
         args.n_ch = 1
         args.im_sz = None
     else:
@@ -1484,7 +1500,7 @@ def main(args):
                         data, labels = datasets.make_circles(
                             n_samples=args.n_rings_data, noise=args.rings_noise,
                             random_state=np.random.RandomState(
-                                args.rings_data_seed))
+                                args.data_seed))
                     data = t.Tensor(data)
                     preds = f.classify(data.to(device))
                     preds = preds.argmax(dim=1)
@@ -1506,13 +1522,13 @@ def main(args):
                     plt.savefig(savefile)
                     # plt.show()
                 if args.dataset == "moons":
-                    vis(savefile="{}/moonvis_train.png".format(args.save_dir), random_state=np.random.RandomState(args.moons_data_seed))
+                    vis(savefile="{}/moonvis_train.png".format(args.save_dir), random_state=np.random.RandomState(args.data_seed))
                     vis(savefile="{}/moonvis_test.png".format(args.save_dir))
                 elif args.dataset == "rings":
                     vis(savefile="{}/ringsvis_train.png".format(args.save_dir),
                         random_state=np.random.RandomState(
-                            args.rings_data_seed))
-                    vis(savefile="{}ringsvis_test.png".format(args.save_dir))
+                            args.data_seed))
+                    vis(savefile="{}/ringsvis_test.png".format(args.save_dir))
 
         checkpoint(f, replay_buffer, "last_ckpt.pt", args, device)
 
@@ -1521,7 +1537,10 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Energy Based Models and Shit")
     #cifar
-    parser.add_argument("--dataset", type=str, default="moons", choices=["cifar10", "svhn", "mnist", "cifar100", "moons", "rings"])
+    parser.add_argument("--dataset", type=str, default="moons", choices=["cifar10", "svhn", "mnist",
+                                                                         "cifar100", "moons", "rings",
+                                                                         "concrete", "protein", "navy",
+                                                                         "power_plant", "year"])
     parser.add_argument("--data_root", type=str, default="../data")
     # optimization
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -1586,13 +1605,11 @@ if __name__ == "__main__":
     parser.add_argument("--vat_weight", type=float, default=1.0)
     parser.add_argument("--n_moons_data", type=int, default=1000, help="how many data points in moon dataset")
     parser.add_argument("--moons_noise", type=float, default=0.1, help="how much noise to add to moons dataset")
-    parser.add_argument("--moons_data_seed", type=int, default=1234, help="for training dataset")
+    parser.add_argument("--data_seed", type=int, default=1234, help="for training dataset")
     parser.add_argument("--n_rings_data", type=int, default=1000,
                         help="how many data points in rings dataset")
     parser.add_argument("--rings_noise", type=float, default=0.03,
                         help="how much noise to add to rings dataset")
-    parser.add_argument("--rings_data_seed", type=int, default=1234,
-                        help="for training dataset")
     parser.add_argument("--class_cond_label_prop", action="store_true", help="Enforce consistency/LDS between data and samples too")
     parser.add_argument("--label_prop_n_steps", type=int, default=1,
                         help="number of steps of SGLD sampler for label prop idea")
@@ -1673,7 +1690,7 @@ if __name__ == "__main__":
         args.n_classes = 100
     elif (args.dataset == "moons" or args.dataset == "rings"):
         args.n_classes = 2
-    else:
+    elif args.dataset in REG_DSETS:
         args.n_classes = 10
     if args.vat:
         print("Running VAT")
