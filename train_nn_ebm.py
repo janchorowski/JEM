@@ -264,7 +264,7 @@ class F(nn.Module):
         if input_size is not None:
             assert use_nn == True #input size is for non-images, ie non-conv.
         super(F, self).__init__()
-        print(input_size)
+        # print(input_size)
         if use_cnn:
             print("Using ConvLarge")
             self.f = ConvLarge(avg_pool_kernel=args.cnn_avg_pool_kernel)
@@ -329,6 +329,22 @@ def cycle(loader):
     while True:
         for data in loader:
             yield data
+
+
+class FastLoader():
+    def __init__(self, dataset, batch_size):
+        self.dataset = dataset
+        self.dataset_size = self.dataset[0].size(0)
+        self.batch_size = batch_size
+
+    def __next__(self):
+        all_inds = np.array(list(range(self.dataset_size)))
+        inds = np.random.choice(all_inds, self.batch_size, replace=False)
+        inds = t.from_numpy(inds).long()
+        batch = self.dataset[0][inds], self.dataset[1][inds] # data, labels
+        return batch
+
+
 
 
 def grad_norm(m):
@@ -582,16 +598,29 @@ def get_data(args):
     dset_train = DataSubset(
         dataset_fn(True, transform_train),
         inds=train_inds)
-    dset_train_labeled = DataSubset(
-        dataset_fn(True, transform_train),
-        inds=train_labeled_inds)
+
+    if args.dataset in TOY_DSETS or args.dataset in REG_DSETS:
+        dset_train_labeled = dataset_fn(True, transform_train)[train_labeled_inds]
+        dload_train_labeled = FastLoader(dset_train_labeled,
+                                         batch_size=min(args.batch_size, len(
+                                             dset_train_labeled)))
+    else:
+        dset_train_labeled = DataSubset(
+            dataset_fn(True, transform_train),
+            inds=train_labeled_inds)
+        dload_train_labeled = DataLoader(dset_train_labeled, batch_size=min(args.batch_size, len(dset_train_labeled)), shuffle=True, num_workers=4, drop_last=True)
+        dload_train_labeled = cycle(dload_train_labeled)
+
     dset_valid = DataSubset(
         dataset_fn(True, transform_test),
         inds=valid_inds)
     dload_train = DataLoader(dset_train, batch_size=args.ul_batch_size, shuffle=True, num_workers=4, drop_last=True)
     dload_train_vbnorm = DataLoader(dset_train, batch_size=args.vbnorm_batch_size, shuffle=False, num_workers=4, drop_last=True)
-    dload_train_labeled = DataLoader(dset_train_labeled, batch_size=min(args.batch_size, len(dset_train_labeled)), shuffle=True, num_workers=4, drop_last=True)
-    dload_train_labeled = cycle(dload_train_labeled)
+
+
+    dset_train_labeled = DataSubset(
+        dataset_fn(True, transform_train),
+        inds=train_labeled_inds)
     dload_train_labeled_static = DataLoader(dset_train_labeled, batch_size=min(args.batch_size, len(dset_train_labeled)), shuffle=False, num_workers=4, drop_last=True)
     dload_train_labeled_static = cycle(dload_train_labeled_static)
     dset_test = dataset_fn(False, transform_test)
@@ -1053,124 +1082,6 @@ def main(args):
             # Be careful with reshape
             return x_g
 
-        # for epoch in range(args.n_epochs):
-        #     for x_d, _ in train_loader:
-
-
-        # from pgan import G, get_samples
-        # logp_net = nn.Sequential(
-        #     nn.utils.weight_norm(nn.Linear(args.im_sz ** 2, 1000)),
-        #     nn.LeakyReLU(.2),
-        #     nn.utils.weight_norm(nn.Linear(1000, 500)),
-        #     nn.LeakyReLU(.2),
-        #     nn.utils.weight_norm(nn.Linear(500, 500)),
-        #     nn.LeakyReLU(.2),
-        #     nn.utils.weight_norm(nn.Linear(500, 250)),
-        #     nn.LeakyReLU(.2),
-        #     nn.utils.weight_norm(nn.Linear(250, 250)),
-        #     nn.LeakyReLU(.2),
-        #     nn.utils.weight_norm(nn.Linear(250, 250)),
-        #     nn.LeakyReLU(.2),
-        #     nn.Linear(250, 1, bias=False)
-        # )
-        #
-        # def logp_fn(x):
-        #     if len(x.shape) > 2:
-        #         x = x.reshape(-1, x.shape[-1] ** 2)
-        #     return logp_net(x)
-        #
-        # data_dim = args.im_sz ** 2
-        # g = G(args.noise_dim, data_dim)
-        #
-        # e_optimizer = t.optim.Adam(logp_net.parameters(), lr=args.lr,
-        #                                betas=[0.5, .999],
-        #                                weight_decay=args.weight_decay)
-        # g_optimizer = t.optim.Adam(g.parameters(), lr=args.lr / 1,
-        #                                betas=[0.5, .999],
-        #                                weight_decay=args.weight_decay)
-        #
-        # g.train()
-        # g.to(device)
-        # logp_net.to(device)
-        #
-        # def sample_q_pgan(n):
-        #     h = t.randn((n, args.noise_dim)).to(device)
-        #     x_mu = g.generator(h)
-        #     x = x_mu + t.randn_like(x_mu) * g.logsigma.exp()
-        #     return x, h
-        #
-        # pgan_itr = 0
-        # args.pgan_stepsize = 1. / args.noise_dim
-        #
-        # def pgan_optimize_and_get_sample(pgan_itr, x_p_d):
-        #     x_g, h_g = sample_q_pgan(args.batch_size)
-        #
-        #     # ebm obj
-        #     ld = logp_fn(x_p_d)[:, 0]
-        #     lg_detach = logp_fn(x_g.detach())[:, 0]
-        #     logp_obj = (ld - lg_detach).mean()
-        #
-        #     # gen obj
-        #     lg = logp_fn(x_g)[:, 0]
-        #     num_samples_posterior = 2
-        #     h_given_x, acceptRate, args.pgan_stepsize = get_samples(
-        #         g.generator, x_g.detach(), h_g.clone(),
-        #         g.logsigma.exp().detach(), burn_in=2,
-        #         num_samples_posterior=num_samples_posterior,
-        #         leapfrog_steps=5, stepsize=args.pgan_stepsize,
-        #         flag_adapt=1,
-        #         hmc_learning_rate=.02, hmc_opt_accept=.67)
-        #
-        #     mean_output_summed = t.zeros_like(x_g)
-        #     mean_output = g.generator(h_given_x)
-        #     # for h in [h_g, h_given_x]:
-        #     for cnt in range(num_samples_posterior):
-        #         mean_output_summed = mean_output_summed + mean_output[
-        #                                                   cnt * args.batch_size:(cnt + 1) * args.batch_size]
-        #     mean_output_summed = mean_output_summed / num_samples_posterior
-        #
-        #     c = ((x_g - mean_output_summed) / g.logsigma.exp() ** 2).detach()
-        #     g_error_entropy = t.mul(c, x_g).mean(0).sum()
-        #     logq_obj = lg.mean() + g_error_entropy
-        #
-        #     if pgan_itr % 2 == 0:
-        #         e_loss = -logp_obj + (
-        #                 ld ** 2).mean() * args.p_control
-        #         e_optimizer.zero_grad()
-        #         e_loss.backward()
-        #         e_optimizer.step()
-        #     else:
-        #         g_loss = -logq_obj
-        #         g_optimizer.zero_grad()
-        #         g_loss.backward()
-        #         g_optimizer.step()
-        #
-        #     g.logsigma.data.clamp_(np.log(args.log_sigma_low),
-        #                            np.log(args.log_sigma_high))
-        #
-        #     if pgan_itr % args.print_every == 0:
-        #         print(
-        #             "({}) | log p obj = {:.4f}, log q obj = {:.4f}, sigma = {:.4f} | "
-        #             "log p(x_d) = {:.4f}, log p(x_m) = {:.4f}, ent = {:.4f} | "
-        #             "stepsize = {:.4f}".format(
-        #                 pgan_itr, logp_obj.item(), logq_obj.item(),
-        #                 g.logsigma.exp().item(),
-        #                 ld.mean().item(), lg.mean().item(),
-        #                 g_error_entropy.item(),
-        #                 args.pgan_stepsize.item()))
-        #
-        #     if pgan_itr % args.viz_every == 0:
-        #
-        #         plot("{}/ref_{}.png".format(args.save_dir,
-        #                                     pgan_itr),
-        #              x_g.view(x_g.size(0), *args.data_size))
-        #         plot("{}/data_{}.png".format(args.save_dir,
-        #                                      pgan_itr),
-        #              x_p_d.view(x_p_d.size(0), *args.data_size))
-        #
-        #     x_g = x_g.reshape(x_p_d.shape)
-        #
-        #     return x_g
 
 
     # optimizer
@@ -1343,10 +1254,6 @@ def main(args):
                         fp = fp_all.mean()
                         fq = fq_all.mean()
 
-                        # print(t.sum(t.abs(x_q) - t.abs(x_p_d)))
-                        # print(t.sum(t.abs(f(x_q)) - t.abs(f(x_p_d))))
-                        # print(fp-fq)
-
                         l_p_x = -(fp - fq)
                         if cur_iter % args.print_every == 0:
                             print('P(x) | {}:{:>d} f(x_p_d)={:>14.9f} f(x_q)={:>14.9f} d={:>14.9f}'.format(epoch, i, fp, fq,
@@ -1514,8 +1421,6 @@ def main(args):
                     labeled_pts_labels = dset_train_labeled[:][1]
                     labeled0 = labeled_pts[labeled_pts_labels == 0]
                     labeled1 = labeled_pts[labeled_pts_labels == 1]
-                    # Note labels right now not forced to be class balanced
-                    # print(sum(labeled_pts_labels))
                     plt.scatter(labeled0[:,0], labeled0[:,1], c="green")
                     plt.scatter(labeled1[:,0], labeled1[:,1], c="red")
                     print("Saving figure")
@@ -1690,7 +1595,7 @@ if __name__ == "__main__":
         args.n_classes = 100
     elif (args.dataset == "moons" or args.dataset == "rings"):
         args.n_classes = 2
-    elif args.dataset in REG_DSETS:
+    elif args.dataset in REG_DSETS or args.dataset == "mnist" or args.dataset == "svhn":
         args.n_classes = 10
     if args.vat:
         print("Running VAT")
