@@ -1419,7 +1419,7 @@ def main(args):
                         else:
                             x_q = sample_q(f, replay_buffer, optim_sgld=optim_sgld,
                                            seed_batch=seed_batch, momentum_buffer=momentum_buffer, data=x_p_d)
-                        if args.dataset == "moons":
+                        if args.dataset == "moons" or args.dataset == "rings":
                             d = x_q.detach().cpu().numpy()
                             plt.clf()
                             plt.scatter(d[:, 0], d[:, 1], c="orange")
@@ -1506,13 +1506,13 @@ def main(args):
                     plt.savefig(savefile)
                     # plt.show()
                 if args.dataset == "moons":
-                    vis(savefile="moonvis_train.png", random_state=np.random.RandomState(args.moons_data_seed))
-                    vis(savefile="moonvis_test.png")
+                    vis(savefile="{}/moonvis_train.png".format(args.save_dir), random_state=np.random.RandomState(args.moons_data_seed))
+                    vis(savefile="{}/moonvis_test.png".format(args.save_dir))
                 elif args.dataset == "rings":
-                    vis(savefile="ringsvis_train.png",
+                    vis(savefile="{}/ringsvis_train.png".format(args.save_dir),
                         random_state=np.random.RandomState(
                             args.rings_data_seed))
-                    vis(savefile="ringsvis_test.png")
+                    vis(savefile="{}ringsvis_test.png".format(args.save_dir))
 
         checkpoint(f, replay_buffer, "last_ckpt.pt", args, device)
 
