@@ -340,6 +340,7 @@ class FastLoader():
     def __next__(self):
         all_inds = np.array(list(range(self.dataset_size)))
         inds = np.random.choice(all_inds, self.batch_size, replace=False)
+        print(self.batch_size, 'bs')
         inds = t.from_numpy(inds).long()
         batch = self.dataset[0][inds], self.dataset[1][inds] # data, labels
         return batch
@@ -603,7 +604,7 @@ def get_data(args):
         dset_train_labeled = dataset_fn(True, transform_train)[train_labeled_inds]
         dload_train_labeled = FastLoader(dset_train_labeled,
                                          batch_size=min(args.batch_size, len(
-                                             dset_train_labeled)))
+                                             dset_train_labeled[0])))
     else:
         dset_train_labeled = DataSubset(
             dataset_fn(True, transform_train),
