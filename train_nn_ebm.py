@@ -41,6 +41,8 @@ from batchrenorm import BatchRenorm1d
 from losses import VATLoss, LDSLoss, sliced_score_matching_vr, \
     sliced_score_matching, denoising_score_matching
 import regression_datasets
+from matplotlib.colors import ListedColormap
+
 
 import toy_data
 TOY_DSETS = ("moons", "circles", "8gaussians", "pinwheel", "2spirals", "checkerboard", "rings", "swissroll")
@@ -421,15 +423,11 @@ def get_model_and_buffer_with_momentum(args, device, sample_q, ref_x=None):
     return f, replay_buffer, momentum_buffer
 
 
-
-
-def logit_transform(x, lamb = 0.05):
-    # Adapted from https://github.com/yookoon/VLAE
-    # x = (x * 255.0 + t.rand_like(x)) / 256.0 # noise
+def logit_transform(x, clipping=0.05):
     precision = args.dequant_precision
     assert precision >= 2.0
     x = (x * (precision - 1) + t.rand_like(x)) / precision # noise for smoothness
-    x = lamb + (1 - 2.0 * lamb) * x # clipping to avoid explosion at ends
+    x = clipping + (1 - 2.0 * clipping) * x # clipping to avoid explosion at ends
     x = t.log(x) - t.log(1.0 - x)
     return x
 
@@ -782,6 +780,28 @@ def plot_jacobian_spectrum(x_samples, f, epoch, use_penult=False):
         plt.savefig(fig_name)
         # plt.show()
         plt.close()
+
+def decision_boundary(net, X, device, plt_bndry=0.5):
+    # Plot the decision boundary. For that, we will assign a color to each
+    # point in the mesh [x_min, x_max]x[y_min, y_max].
+    x_min, x_max = X[:, 0].min() - plt_bndry, X[:, 0].max() + plt_bndry
+    y_min, y_max = X[:, 1].min() - plt_bndry, X[:, 1].max() + plt_bndry
+    xx, yy = np.meshgrid(np.arange(x_min, x_max, .02),
+                         np.arange(y_min, y_max, .02))
+    xxt = t.from_numpy(xx.ravel()).float()
+    yyt = t.from_numpy(yy.ravel()).float()
+    xxyy = t.cat([xxt[:, None], yyt[:, None]], dim=1)
+    logits = net.classify(xxyy.to(device))
+    Z = logits.argmax(1)
+    plt.pcolormesh(xx, yy, Z.cpu().numpy().reshape(xx.shape), cmap=ListedColormap(['r', 'b']), alpha=.1)
+
+def visualize_decision_boundary(net, Xf, Xfl, device, fname="data.png"):
+    plt.clf()
+    decision_boundary(net, Xf, device)
+    plt.scatter(Xf[:, 0], Xf[:, 1], c='grey', alpha=0.3)
+    plt.scatter(Xfl[:args.labels_per_class, 0], Xfl[:args.labels_per_class, 1], c='r')
+    plt.scatter(Xfl[args.labels_per_class:, 0], Xfl[args.labels_per_class:, 1], c='b')
+    plt.savefig("{}/{}".format(args.save_dir, fname))
 
 
 def main(args):
@@ -1157,7 +1177,7 @@ def main(args):
 
             seed_batch = None
             if args.use_cd:
-                seed_batch = x_p_d.clone() # breaks reference so that we don't change
+                seed_batch = x_p_d.clone() # breaks reference ` that we don't change
                 # x_p_d at the same time, important for the f = fp - fq calculation
                 # to be non-zero
 
@@ -1370,28 +1390,7 @@ def main(args):
                     print("Best Valid!: {}".format(correct))
                     best_valid_found = True
                     checkpoint(f, replay_buffer, "best_valid_ckpt.pt", args, device)
-                    if args.dataset == "moons":
-                        data, labels = datasets.make_moons(args.n_moons_data, noise=args.moons_noise)
-                        data = t.Tensor(data)
-                        preds = f.classify(data.to(device))
-                        preds = preds.argmax(dim=1)
-                        preds = preds.cpu()
-                        data1 = data[preds == 0]
-                        plt.clf()
-                        plt.scatter(data1[:, 0], data1[:, 1], c="orange")
-                        data2 = data[preds == 1]
-                        plt.scatter(data2[:, 0], data2[:, 1], c="blue")
 
-                        labeled_pts = dset_train_labeled[:][0]
-                        labeled_pts_labels = dset_train_labeled[:][1]
-                        labeled0 = labeled_pts[labeled_pts_labels == 0]
-                        labeled1 = labeled_pts[labeled_pts_labels == 1]
-                        # Note labels right now not forced to be class balanced
-                        # print(sum(labeled_pts_labels))
-                        plt.scatter(labeled0[:, 0], labeled0[:, 1], c="green")
-                        plt.scatter(labeled1[:, 0], labeled1[:, 1], c="red")
-                        print("Saving figure")
-                        plt.savefig("{}/moonsvis.png".format(args.save_dir))
 
                 # test set
                 correct, loss = eval_classification(f, dload_test, device)
@@ -1409,23 +1408,29 @@ def main(args):
                             random_state=np.random.RandomState(
                                 args.data_seed))
                     data = t.Tensor(data)
-                    preds = f.classify(data.to(device))
-                    preds = preds.argmax(dim=1)
-                    preds = preds.cpu()
-                    data1 = data[preds == 0]
-                    plt.scatter(data1[:,0], data1[:,1], c="orange")
-                    data2 = data[preds == 1]
-                    plt.scatter(data2[:,0], data2[:,1], c="blue")
+                    # data = data.to(device)
 
                     labeled_pts = dset_train_labeled[:][0]
-                    labeled_pts_labels = dset_train_labeled[:][1]
-                    labeled0 = labeled_pts[labeled_pts_labels == 0]
-                    labeled1 = labeled_pts[labeled_pts_labels == 1]
-                    plt.scatter(labeled0[:,0], labeled0[:,1], c="green")
-                    plt.scatter(labeled1[:,0], labeled1[:,1], c="red")
                     print("Saving figure")
-                    plt.savefig(savefile)
+
+                    visualize_decision_boundary(f, data, labeled_pts, device, savefile)
+
+                    # preds = f.classify(data.to(device))
+                    # preds = preds.argmax(dim=1)
+                    # preds = preds.cpu()
+                    # data1 = data[preds == 0]
+                    # plt.scatter(data1[:,0], data1[:,1], c="orange")
+                    # data2 = data[preds == 1]
+                    # plt.scatter(data2[:,0], data2[:,1], c="blue")
+                    #
+                    # labeled_pts_labels = dset_train_labeled[:][1]
+                    # labeled0 = labeled_pts[labeled_pts_labels == 0]
+                    # labeled1 = labeled_pts[labeled_pts_labels == 1]
+                    # plt.scatter(labeled0[:,0], labeled0[:,1], c="green")
+                    # plt.scatter(labeled1[:,0], labeled1[:,1], c="red")
+                    # plt.savefig(savefile)
                     # plt.show()
+
                 if args.dataset == "moons":
                     vis(savefile="{}/moonvis_train.png".format(args.save_dir), random_state=np.random.RandomState(args.data_seed))
                     vis(savefile="{}/moonvis_test.png".format(args.save_dir))
