@@ -9,7 +9,7 @@ def _l2_normalize(d):
 
 
 class VATLoss(nn.Module):
-    # Adapted from https://github.com/lyakaap/VAT-pytorch/blob/master/vat.py
+    # Adapted, with permission, from https://github.com/lyakaap/VAT-pytorch/blob/master/vat.py
 
     def __init__(self, xi=10.0, eps=2.0, ip=1):
         """VAT loss
@@ -50,7 +50,7 @@ class VATLoss(nn.Module):
 
 
 class LDSLoss(nn.Module):
-    # Adapted from https://github.com/lyakaap/VAT-pytorch/blob/master/vat.py
+    # Adapted, with permission, from https://github.com/lyakaap/VAT-pytorch/blob/master/vat.py
 
     def __init__(self, n_steps):
         # n_steps = args.label_prop_n_steps
@@ -62,7 +62,6 @@ class LDSLoss(nn.Module):
             pred = t.nn.functional.softmax(model.classify(x), dim=1)
 
         # get a sample with a certain number of steps
-        # args.label_prop_n_steps
         samples = sample_q(model, replay_buffer=[], y=pred.argmax(dim=1), n_steps=self.n_steps, seed_batch=seed_batch)
 
         # calc LDS between prediction on sample and prediction on original
