@@ -438,12 +438,7 @@ def get_data(args):
     elif args.dataset == "mnist":
         if args.mnist_no_logit_transform:
             transform_train = tr.Compose(
-                [
-                 # tr.Pad(4),
-                 # tr.RandomCrop(args.im_sz),
-                 tr.ToTensor(),
-                 # lambda x: x + args.mnist_sigma * t.randn_like(x)
-                 ]
+                [tr.ToTensor()]
             )
         elif args.mnist_no_crop:
             transform_train = tr.Compose(
@@ -478,26 +473,12 @@ def get_data(args):
     if args.dataset == "mnist":
         if args.mnist_no_logit_transform:
             transform_test = tr.Compose(
-                [tr.ToTensor(),
-                 # tr.Normalize((.5,), (.5,)),
-                 # lambda x: x + args.sigma * t.randn_like(x)
-                 # lambda x: x + args.mnist_sigma * t.randn_like(x)
-                ]
-            )
-        elif args.mnist_no_crop:
-            transform_test = tr.Compose(
-                [tr.ToTensor(),
-                 logit_transform,
-                 ]
+                [tr.ToTensor()]
             )
         else:
             transform_test = tr.Compose(
                 [tr.ToTensor(),
-                 # tr.Normalize((.5,), (.5,)),
-                 # lambda x: x + args.sigma * t.randn_like(x)
-                 logit_transform,
-                 # lambda x: x + args.mnist_sigma * t.randn_like(x)
-                 ]
+                 logit_transform]
             )
     elif (args.dataset == "moons" or args.dataset == "rings"):
         transform_test = None
@@ -521,8 +502,7 @@ def get_data(args):
                 data, labels = datasets.make_moons(n_samples=args.n_moons_data, noise=args.moons_noise, random_state=np.random.RandomState(args.data_seed))
             elif args.dataset == "rings":
                 data, labels = datasets.make_circles(n_samples=args.n_rings_data, noise=args.rings_noise, random_state=np.random.RandomState(args.data_seed))
-            # plt.scatter(data[:,0],data[:,1])
-            # plt.show()
+
             data = t.Tensor(data)
 
             labels = t.Tensor(labels)
@@ -644,30 +624,12 @@ def get_sample_q(args, device):
             momentum = momentum_buffer[buffer_inds].to(device)
         for k in range(n_steps):
             f_prime = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
-            # print(t.sum(t.abs(f_prime)))
-            # Note f_prime is log sum exp whereas our energy function is neg log sum exp
-            # So the reason our steps were positive before was it was minus a negative
-            neg_f_prime = -f_prime
-            # This negative f prime is the gradient of the energy function, which we are taking steps
-            # in descent with respect to.
-            # x_k.data += args.sgld_lr * f_prime + args.sgld_std * t.randn_like(x_k)
             if momentum_buffer is not None:
                 # Modification to usual momentum to "conserve energy" which should help for sampling
                 momentum = (args.sgld_momentum * momentum + (1-args.sgld_momentum) * f_prime)
                 x_k.data += args.sgld_lr * momentum
-                # No noise with momentum right now but can do so if we want by
-                # unindenting the line 3 lines below
             else:
-                # old = x_k.data + 0.0 # +0.0 breaks a reference, so it's now a copy instead of a reference
-                # new = x_k.data + args.sgld_lr * f_prime
                 x_k.data += args.sgld_lr * f_prime
-                # print("---")
-                # print(args.sgld_lr * f_prime)
-                # print(x_k.data)
-                # new2 = x_k.data
-                # print(t.sum(t.abs(args.sgld_lr * f_prime)))
-                # print(t.sum(t.abs(old)-t.abs(new)))
-                # print(t.sum(t.abs(old)-t.abs(new2)))
                 x_k.data += args.sgld_std * t.randn_like(x_k)
 
         f.train()
@@ -716,9 +678,6 @@ def checkpoint(f, buffer, tag, args, device):
     f.to(device)
 
 def plot_jacobian_spectrum(x_samples, f, epoch, use_penult=False):
-    # Let's just do 1 example for now
-    # input_ex_ind = 0
-    # x_example = x_lab[input_ex_ind]
     for c in range(args.n_classes):
         x_example = x_samples[c]
         x_example.requires_grad = True
@@ -741,7 +700,6 @@ def plot_jacobian_spectrum(x_samples, f, epoch, use_penult=False):
         f.train()
         jacobian = t.stack(j_list)
         u, s, v = t.svd(jacobian)
-        # print(s)
         spectrum = s.detach().cpu().numpy()
         if use_penult:
             plt.scatter(np.arange(0, penult_plot_num), spectrum[0:penult_plot_num])
@@ -750,7 +708,6 @@ def plot_jacobian_spectrum(x_samples, f, epoch, use_penult=False):
             plt.scatter(np.arange(0, args.n_classes), spectrum)
             fig_name = "spectrum_digit{}_epoch{}".format(c, epoch)
         plt.savefig(fig_name)
-        # plt.show()
         plt.close()
 
 def decision_boundary(net, X, device, plt_bndry=0.5):
@@ -833,7 +790,6 @@ def main(args):
 
     optim_sgld = None
     if args.optim_sgld:
-        # TODO other optimizers
         # This SGD optimizer is basically SGLD with 0 noise
         optim_sgld = t.optim.SGD([replay_buffer], lr=args.sgld_lr, momentum=args.optim_sgld_momentum)
 
@@ -882,9 +838,7 @@ def main(args):
 
             seed_batch = None
             if args.use_cd:
-                seed_batch = x_p_d.clone() # breaks reference ` that we don't change
-                # x_p_d at the same time, important for the f = fp - fq calculation
-                # to be non-zero
+                seed_batch = x_p_d.clone() # breaks reference, important
 
             L = 0.
 
@@ -932,10 +886,7 @@ def main(args):
             else:
 
                 if args.p_x_weight > 0:  # maximize log p(x)
-                    # if args.class_cond_label_prop:
-                        # May no longer need class cond samples now
-                        # assert args.class_cond_p_x_sample, "need class-conditional samples for psuedo label prop"
-                    if args.score_match:
+                   if args.score_match:
                         sm_loss = sliced_score_matching(f, x_p_d, args.n_sm_vectors)
                         L += args.p_x_weight * sm_loss
                         if cur_iter % args.print_every == 0:
