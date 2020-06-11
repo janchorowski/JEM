@@ -418,12 +418,6 @@ def logit_transform(x, clipping=0.05):
 
 def get_data(args):
     if args.dataset == "svhn":
-        # if args.pgan:
-        #     transform_train=tr.Compose([tr.ToTensor(),
-        #                                     lambda x: (((255. * x) + t.rand_like(
-        #                                                 x)) / 256.),
-        #                                     lambda x: 2 * x - 1])
-        #
         if args.svhn_logit_transform:
             transform_train = tr.Compose(
                 [tr.Pad(4),
@@ -442,11 +436,7 @@ def get_data(args):
                  lambda x: x + args.sigma * t.randn_like(x)]
             )
     elif args.dataset == "mnist":
-        if args.pgan:
-            transform_train = tr.Compose([tr.ToTensor(),
-                                            lambda x: (((255. * x) + t.rand_like(
-                                                x)) / 256.)])
-        elif args.mnist_no_logit_transform:
+        if args.mnist_no_logit_transform:
             transform_train = tr.Compose(
                 [
                  # tr.Pad(4),
@@ -486,9 +476,7 @@ def get_data(args):
              lambda x: x + args.sigma * t.randn_like(x)]
         )
     if args.dataset == "mnist":
-        if args.pgan:
-            transform_test = tr.Compose([tr.ToTensor(),])
-        elif args.mnist_no_logit_transform:
+        if args.mnist_no_logit_transform:
             transform_test = tr.Compose(
                 [tr.ToTensor(),
                  # tr.Normalize((.5,), (.5,)),
@@ -836,259 +824,6 @@ def main(args):
     plot = lambda p, x: tv.utils.save_image(t.clamp(x, -1, 1), p, normalize=True, nrow=sqrt(x.size(0)))
 
 
-    if args.pgan:
-
-        from train_pgan_ebm_simple import get_models, brute_force_jac, condition_number
-        from train_pgan_ebm_simple import get_data as pgan_get_data
-        import hmc
-
-        data_sgld_dir = "{}/{}".format(args.save_dir, "data_sgld")
-        utils.makedirs(data_sgld_dir)
-        gen_sgld_dir = "{}/{}".format(args.save_dir, "generator_sgld")
-        utils.makedirs(gen_sgld_dir)
-        z_sgld_dir = "{}/{}".format(args.save_dir, "z_only_sgld")
-        utils.makedirs(z_sgld_dir)
-
-        data_sgld_chain_dir = "{}/{}_chain".format(args.save_dir,
-                                                   "data_sgld_chain")
-        utils.makedirs(data_sgld_chain_dir)
-        gen_sgld_chain_dir = "{}/{}_chain".format(args.save_dir,
-                                                  "generator_sgld_chain")
-        utils.makedirs(gen_sgld_chain_dir)
-        z_sgld_chain_dir = "{}/{}_chain".format(args.save_dir,
-                                                "z_only_sgld_chain")
-        utils.makedirs(z_sgld_chain_dir)
-        logp_net, g = get_models(args)
-
-        e_optimizer = t.optim.Adam(logp_net.parameters(), lr=args.lr,
-                                       betas=[0., .9],
-                                       weight_decay=args.weight_decay)
-        g_optimizer = t.optim.Adam(g.parameters(), lr=args.lr / 1,
-                                       betas=[0., .9],
-                                       weight_decay=args.weight_decay)
-
-        # pgan_train_loader, pgan_test_loader, plot = pgan_get_data(args)
-        # pgan_train_loader = cycle(pgan_train_loader)
-
-        def sample_q_pgan(n, requires_grad=False):
-            h = t.randn((n, args.noise_dim)).to(device)
-            if requires_grad:
-                h.requires_grad_()
-            x_mu = g.generator(h)
-            x = x_mu + t.randn_like(x_mu) * g.logsigma.exp()
-            return x, h
-
-        def logq_joint(x, h):
-            logph = tdist.Normal(0, 1).log_prob(h).sum(1)
-            px_given_h = tdist.Normal(g.generator(h), g.logsigma.exp())
-            logpx_given_h = px_given_h.log_prob(x).flatten(start_dim=1).sum(1)
-            return logpx_given_h + logph
-
-        g.train()
-        g.to(device)
-        logp_net.train()
-        logp_net.to(device)
-
-        pgan_itr = 0
-
-        # def logp_fn(x):
-        #     if len(x.shape) > 2:
-        #         x = x.reshape(-1, x.shape[-1] ** 2)
-        #     return logp_net(x)
-
-        args.pgan_stepsize = 1. / args.noise_dim
-        args.pgan_sgld_lr = 1. / args.noise_dim
-        args.pgan_sgld_lr_z = 1. / args.noise_dim
-        args.pgan_sgld_lr_zne = 1. / args.noise_dim
-        # TODO
-        # Ok first try and just get it running
-        # THen try 0 steps, 1 step, etc. A few different configs.
-        def pgan_optimize_and_get_sample(itr, x_d):
-
-            if args.dataset in TOY_DSETS:
-                x_d = toy_data.inf_train_gen(args.dataset,
-                                             batch_size=args.batch_size)
-                x_d = t.from_numpy(x_d).float().to(device)
-            else:
-                x_d = x_d.to(device)
-
-            # sample from q(x, h)
-            x_g, h_g = sample_q_pgan(args.batch_size)
-            x_g_ref = x_g
-            # ebm obj
-            ld = logp_net(x_d).squeeze()
-            lg_detach = logp_net(x_g_ref.detach()).squeeze()
-            logp_obj = (ld - lg_detach).mean()
-
-            e_loss = -logp_obj + (ld ** 2).mean() * args.p_control
-            if itr % args.e_iters == 0:
-                e_optimizer.zero_grad()
-                e_loss.backward()
-                e_optimizer.step()
-
-            # gen obj
-            lg = logp_net(x_g).squeeze()
-
-            if args.gp == 0:
-                if args.my_single_sample:
-                    logq = logq_joint(x_g.detach(), h_g.detach())
-                    # mine
-                    logq_obj = lg.mean() - args.ent_weight * logq.mean()
-                    g_error_entropy = -logq.mean()
-                elif args.adji_single_sample:
-                    # adji
-                    mean_output_summed = g.generator(h_g)
-                    c = ((
-                                 x_g - mean_output_summed) / g.logsigma.exp() ** 2).detach()
-                    g_error_entropy = t.mul(c, x_g).mean(0).sum()
-                    logq_obj = lg.mean() + args.ent_weight * g_error_entropy
-                else:
-                    num_samples_posterior = 2
-                    h_given_x, acceptRate, args.pgan_stepsize = hmc.get_gen_posterior_samples(
-                        g.generator, x_g.detach(), h_g.clone(),
-                        g.logsigma.exp().detach(), burn_in=2,
-                        num_samples_posterior=num_samples_posterior,
-                        leapfrog_steps=5, stepsize=args.pgan_stepsize, flag_adapt=1,
-                        hmc_learning_rate=.02, hmc_opt_accept=.67)
-
-                    mean_output_summed = t.zeros_like(x_g)
-                    mean_output = g.generator(h_given_x)
-                    # for h in [h_g, h_given_x]:
-                    for cnt in range(num_samples_posterior):
-                        mean_output_summed = mean_output_summed + mean_output[
-                                                                  cnt * args.batch_size:(
-                                                                                                cnt + 1) * args.batch_size]
-                    mean_output_summed = mean_output_summed / num_samples_posterior
-
-                    c = ((
-                                 x_g - mean_output_summed) / g.logsigma.exp() ** 2).detach()
-                    g_error_entropy = t.mul(c, x_g).mean(0).sum()
-                    logq_obj = lg.mean() + args.ent_weight * g_error_entropy
-            else:
-                x_g, h_g = sample_q_pgan(args.batch_size, requires_grad=True)
-                if args.brute_force:
-                    jac = t.zeros(
-                        (x_g.size(0), x_g.size(1), h_g.size(1)))
-                    j = t.autograd.grad(x_g[:, 0].sum(), h_g,
-                                        retain_graph=True)[0]
-                    jac[:, 0, :] = j
-                    j = t.autograd.grad(x_g[:, 1].sum(), h_g,
-                                        retain_graph=True)[0]
-                    jac[:, 1, :] = j
-                    u, s, v = t.svd(jac)
-                    logs = s.log()
-                    logpx = 0 - logs.sum(1)
-                    g_error_entropy = logpx.mean()
-                    logq_obj = lg.mean() - args.ent_weight * logpx.mean()
-
-                else:
-                    eps = t.randn_like(x_g)
-                    epsJ = t.autograd.grad(x_g, h_g, grad_outputs=eps,
-                                           retain_graph=True)[0]
-                    # eps2 = torch.randn_like(x_g)
-                    # epsJ2 = torch.autograd.grad(x_g, h_g, grad_outputs=eps2, retain_graph=True)[0]
-                    epsJtJeps = (epsJ * epsJ).sum(1)
-                    g_error_entropy = ((epsJtJeps - args.gp) ** 2).mean()
-                    logq_obj = lg.mean() - args.ent_weight * g_error_entropy
-
-            g_loss = -logq_obj
-            g_optimizer.zero_grad()
-            g_loss.backward()
-            g_optimizer.step()
-
-            if args.clamp:
-                g.logsigma.data.clamp_(np.log(.01), np.log(.0101))
-            else:
-                g.logsigma.data.clamp_(np.log(.01), np.log(.3))
-
-            if itr % args.print_every == 0:
-                print(
-                    "({}) | log p obj = {:.4f}, log q obj = {:.4f}, sigma = {:.4f} | "
-                    "log p(x_d) = {:.4f}, log p(x_m) = {:.4f}, ent = {:.4f} | "
-                    "sgld_lr = {}, sgld_lr_z = {}, sgld_lr_zne = {} | stepsize = {}".format(
-                        itr, logp_obj.item(), logq_obj.item(),
-                        g.logsigma.exp().item(),
-                        ld.mean().item(), lg_detach.mean().item(),
-                        g_error_entropy.item(),
-                        args.pgan_sgld_lr, args.pgan_sgld_lr_z, args.pgan_sgld_lr_zne, args.pgan_stepsize))
-
-            if itr % args.viz_every == 0:
-                if args.dataset in TOY_DSETS:
-                    plt.clf()
-                    xg = x_g_ref.detach().cpu().numpy()
-                    xd = x_d.cpu().numpy()
-
-                    ax = plt.subplot(1, 4, 1, aspect="equal",
-                                     title='refined')
-                    ax.scatter(xg[:, 0], xg[:, 1], s=1)
-
-                    ax = plt.subplot(1, 4, 2, aspect="equal", title='data')
-                    ax.scatter(xd[:, 0], xd[:, 1], s=1)
-
-                    ax = plt.subplot(1, 4, 3, aspect="equal")
-                    logp_net.cpu()
-                    utils.plt_flow_density(logp_net, ax,
-                                           low=x_d.min().item(),
-                                           high=x_d.max().item())
-                    plt.savefig("{}/{}.png".format(args.save_dir, itr))
-                    logp_net.to(device)
-
-                    ax = plt.subplot(1, 4, 4, aspect="equal")
-                    logp_net.cpu()
-                    utils.plt_flow_density(logp_net, ax,
-                                           low=x_d.min().item(),
-                                           high=x_d.max().item(), exp=False)
-                    plt.savefig("{}/{}.png".format(args.save_dir, itr))
-                    logp_net.to(device)
-
-                    x_g, h_g = sample_q_pgan(args.batch_size, requires_grad=True)
-                    jac = t.zeros(
-                        (x_g.size(0), x_g.size(1), h_g.size(1)))
-
-                    j = t.autograd.grad(x_g[:, 0].sum(), h_g,
-                                        retain_graph=True)[0]
-                    jac[:, 0, :] = j
-                    j = t.autograd.grad(x_g[:, 1].sum(), h_g,
-                                        retain_graph=True)[0]
-                    jac[:, 1, :] = j
-                    u, s, v = t.svd(jac)
-
-                    s1, s2 = s[:, 0].detach(), s[:, 1].detach()
-                    plt.clf()
-                    plt.hist(s1.numpy(), alpha=.75)
-                    plt.hist(s2.numpy(), alpha=.75)
-                    plt.savefig("{}/{}_svd.png".format(args.save_dir, itr))
-
-                    plt.clf()
-                    plt.hist(s1.log().numpy(), alpha=.75)
-                    plt.hist(s2.log().numpy(), alpha=.75)
-                    plt.savefig(
-                        "{}/{}_log_svd.png".format(args.save_dir, itr))
-                else:
-                    x_g, h_g = sample_q_pgan(args.batch_size, requires_grad=True)
-                    J = brute_force_jac(x_g, h_g)
-                    c, h, l = condition_number(J)
-                    plt.clf()
-                    plt.hist(c.numpy())
-                    plt.savefig("{}/cn_{}.png".format(args.save_dir, itr))
-                    plt.clf()
-                    plt.hist(h.numpy())
-                    plt.savefig(
-                        "{}/large_s_{}.png".format(args.save_dir, itr))
-                    plt.clf()
-                    plt.hist(l.numpy())
-                    plt.savefig(
-                        "{}/small_s_{}.png".format(args.save_dir, itr))
-                    plt.clf()
-
-                    plot("{}/{}_init.png".format(data_sgld_dir, itr),
-                         x_g.view(x_g.size(0), *args.data_size))
-
-            # Be careful with reshape
-            return x_g
-
-
-
     # optimizer
     params = f.class_output.parameters() if args.clf_only else f.parameters()
     if args.optimizer == "adam":
@@ -1126,21 +861,6 @@ def main(args):
     if args.eval_mode_except_clf:
         f.eval()
 
-
-    if args.pgan:
-        while True:
-            for x_p_d, _ in dload_train:
-            # for x_p_d, _ in pgan_train_loader:
-                x_p_d = x_p_d.to(device)
-
-                pgan_optimize_and_get_sample(pgan_itr, x_p_d)
-
-                pgan_itr += 1
-
-                if pgan_itr > args.pgan_warmup_iters:
-                    break
-            if pgan_itr > args.pgan_warmup_iters:
-                break
 
     for epoch in range(args.n_epochs):
         if epoch in args.decay_epochs:
@@ -1234,15 +954,6 @@ def main(args):
                                 epoch, i, sm_loss))
 
                     else:
-                        if args.pgan:
-                            # x_pgan, _ = pgan_train_loader.__next__()
-                            x_pgan = x_p_d
-                            x_g = pgan_optimize_and_get_sample(pgan_itr, x_pgan)
-                            pgan_itr += 1
-
-                            # x_q = x_g.clone().detach()
-                            seed_batch = x_g.clone().detach()
-
                         # else:
                         if args.class_cond_p_x_sample:
                             assert not args.uncond, "can only draw class-conditional samples if EBM is class-cond"
@@ -1534,29 +1245,17 @@ if __name__ == "__main__":
     parser.add_argument("--nn_hidden_size", type=int, default=500)
     parser.add_argument("--nn_extra_layers", type=int, default=2, help="2 for a 4-layer MLP (this is only middle layers, excludes input and output layers)")
     parser.add_argument("--buffer_reinit_from_data", action="store_true", help="For PCD replay buffer, reinitialize from data points rather than random points")
-    parser.add_argument("--pgan", action="store_true", help="Use PGAN to generate samples")
     parser.add_argument("--h_dim", type=int, default=100)
     parser.add_argument("--noise_dim", type=int, default=100)
     parser.add_argument("--p_control", type=float, default=0.0)
     parser.add_argument("--log_sigma_low", type=float, default=.001)
     parser.add_argument("--log_sigma_high", type=float, default=0.2)
-    parser.add_argument("--viz_every", type=int, default=100, help="Iterations between visualization of reference for PGAN")
-    parser.add_argument("--pgan_warmup_iters", type=int, default=80000,
-                        help="number of iters to train PGAN before training EBM")
-    parser.add_argument("--pgan_test", action="store_true", help="TESTING ONLY")
+    parser.add_argument("--viz_every", type=int, default=100, help="Iterations between visualization")
     parser.add_argument("--resnet", action="store_true", help="Resnet for PGAN")
     parser.add_argument("--e_iters", type=int, default=1)
     parser.add_argument("--g_iters", type=int, default=1)
     parser.add_argument("--gp", type=float, default=0.)
-    parser.add_argument("--hmc", action="store_true", help="for PGAN")
-    parser.add_argument("--refine", action="store_true", help="for PGAN")
-    parser.add_argument("--refine_latent", action="store_true", help="for PGAN")
-    parser.add_argument("--brute_force", action="store_true", help="for PGAN")
-    parser.add_argument("--my_single_sample", action="store_true", help="for PGAN")
-    parser.add_argument("--adji_single_sample", action="store_true", help="for PGAN")
-    parser.add_argument("--clamp", action="store_true", help="for PGAN")
     parser.add_argument("--ent_weight", type=float, default=1.)
-    parser.add_argument("--sgld_steps", type=int, default=100, help="for PGAN")
     parser.add_argument("--l2_energy_reg", type=float, default=0., help="Regularize energy outputs")
     parser.add_argument("--l2_energy_reg_neg", action="store_true", help="Regularize energy outputs on negative samples (x_q) as well")
     parser.add_argument("--dataset_seed", type=int, default=1234, help="for selecting data")
