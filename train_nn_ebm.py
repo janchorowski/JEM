@@ -28,16 +28,11 @@ import json
 from tqdm import tqdm
 t.backends.cudnn.benchmark = True
 t.backends.cudnn.enabled = True
-# seed = 1
-# im_sz = 32
-# n_ch = 3
 from sklearn import datasets
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from vbnorm import VirtualBatchNormNN
-# from batch_renormalization import BatchRenormalizationNN
-from batchrenorm import BatchRenorm1d
 from losses import VATLoss, LDSLoss, sliced_score_matching_vr, \
     sliced_score_matching, denoising_score_matching
 import regression_datasets
@@ -97,8 +92,6 @@ class NeuralNet(nn.Module):
         if use_vbnorm:
             assert ref_x is not None
             self.layers.append(VirtualBatchNormNN(hidden_size))
-            # self.layers.append(BatchRenormalizationNN(hidden_size))
-            # self.layers.append(BatchRenorm1d(hidden_size))
         elif args.batch_norm:
             self.layers.append(nn.BatchNorm1d(num_features=hidden_size, affine=affine))
 
@@ -119,8 +112,6 @@ class NeuralNet(nn.Module):
             if not args.first_layer_bn_only:
                 if use_vbnorm:
                     self.layers.append(VirtualBatchNormNN(hidden_size))
-                    # self.layers.append(VirtualBatchNormNN(hidden_size))
-                    # self.layers.append(BatchRenorm1d(hidden_size))
                 elif args.batch_norm:
                     self.layers.append(nn.BatchNorm1d(num_features=hidden_size, affine=affine))
             if args.swish:
@@ -155,7 +146,7 @@ class NeuralNet(nn.Module):
                 assert ref_x is not None
                 ref_x, mean, mean_sq = layer(ref_x, None, None)
                 x, _, _ = layer(x, mean, mean_sq)
-            elif isinstance(layer, BatchRenorm1d) or isinstance(layer, nn.BatchNorm1d):
+            elif isinstance(layer, nn.BatchNorm1d):
                 x = layer(x)
             else: # now includes ReLU/activation functions
                 if args.vbnorm:
@@ -318,13 +309,10 @@ class CCF(F):
             return t.gather(logits, 1, y[:, None])
 
 
-
-
 def cond_entropy(logits):
     probs = t.softmax(logits, dim=1)
     # Use log softmax for stability.
     return - t.sum(probs * t.log_softmax(logits, dim=1)) / probs.shape[0]
-
 
 
 def cycle(loader):
@@ -333,7 +321,7 @@ def cycle(loader):
             yield data
 
 
-class FastLoader():
+class FastLoader:
     def __init__(self, dataset, batch_size):
         self.dataset = dataset
         self.dataset_size = self.dataset[0].size(0)
@@ -345,8 +333,6 @@ class FastLoader():
         inds = t.from_numpy(inds).long()
         batch = self.dataset[0][inds], self.dataset[1][inds] # data, labels
         return batch
-
-
 
 
 def grad_norm(m):
@@ -379,11 +365,9 @@ def init_random(args, bs):
     return out
 
 
-def get_model_and_buffer(args, device, sample_q, ref_x=None):
+def get_model_and_buffer(args, device, ref_x=None):
     model_cls = F if args.uncond else CCF
     args.input_size = None
-    # if args.dataset == "mnist" or (args.dataset == "moons" or args.dataset == "rings"):
-        # use_nn=False # testing only
     if args.dataset == "mnist":
         args.data_size = (1, 28, 28)
     elif args.dataset == "svhn" or args.dataset == "cifar10":
@@ -417,8 +401,8 @@ def get_model_and_buffer(args, device, sample_q, ref_x=None):
     return f, replay_buffer
 
 
-def get_model_and_buffer_with_momentum(args, device, sample_q, ref_x=None):
-    f, replay_buffer = get_model_and_buffer(args, device, sample_q, ref_x)
+def get_model_and_buffer_with_momentum(args, device, ref_x=None):
+    f, replay_buffer = get_model_and_buffer(args, device, ref_x)
     momentum_buffer = t.zeros_like(replay_buffer)
     return f, replay_buffer, momentum_buffer
 
@@ -797,6 +781,7 @@ def decision_boundary(net, X, device, plt_bndry=0.5):
 
 def visualize_decision_boundary(net, Xf, Xfl, device, fname="data.png"):
     plt.clf()
+    plt.axis('off')
     decision_boundary(net, Xf, device)
     plt.scatter(Xf[:, 0], Xf[:, 1], c='grey', alpha=0.3)
     plt.scatter(Xfl[:args.labels_per_class, 0], Xfl[:args.labels_per_class, 1], c='r')
@@ -843,9 +828,9 @@ def main(args):
 
     momentum_buffer = None
     if args.use_sgld_momentum:
-        f, replay_buffer, momentum_buffer = get_model_and_buffer_with_momentum(args, device, sample_q, ref_x)
+        f, replay_buffer, momentum_buffer = get_model_and_buffer_with_momentum(args, device, ref_x)
     else:
-        f, replay_buffer = get_model_and_buffer(args, device, sample_q, ref_x)
+        f, replay_buffer = get_model_and_buffer(args, device, ref_x)
 
     sqrt = lambda x: int(t.sqrt(t.Tensor([x])))
     plot = lambda p, x: tv.utils.save_image(t.clamp(x, -1, 1), p, normalize=True, nrow=sqrt(x.size(0)))
@@ -1385,7 +1370,7 @@ def main(args):
                 best_valid_found = False
                 correct, loss = eval_classification(f, dload_valid, device)
                 print("Epoch {}: Valid Loss {}, Valid Acc {}".format(epoch, loss, correct))
-                if correct > best_valid_acc:
+                if correct >= best_valid_acc:
                     best_valid_acc = correct
                     print("Best Valid!: {}".format(correct))
                     best_valid_found = True
@@ -1414,22 +1399,6 @@ def main(args):
                     print("Saving figure")
 
                     visualize_decision_boundary(f, data, labeled_pts, device, savefile)
-
-                    # preds = f.classify(data.to(device))
-                    # preds = preds.argmax(dim=1)
-                    # preds = preds.cpu()
-                    # data1 = data[preds == 0]
-                    # plt.scatter(data1[:,0], data1[:,1], c="orange")
-                    # data2 = data[preds == 1]
-                    # plt.scatter(data2[:,0], data2[:,1], c="blue")
-                    #
-                    # labeled_pts_labels = dset_train_labeled[:][1]
-                    # labeled0 = labeled_pts[labeled_pts_labels == 0]
-                    # labeled1 = labeled_pts[labeled_pts_labels == 1]
-                    # plt.scatter(labeled0[:,0], labeled0[:,1], c="green")
-                    # plt.scatter(labeled1[:,0], labeled1[:,1], c="red")
-                    # plt.savefig(savefile)
-                    # plt.show()
 
                 if args.dataset == "moons":
                     vis(savefile="{}/moonvis_train.png".format(args.save_dir), random_state=np.random.RandomState(args.data_seed))
