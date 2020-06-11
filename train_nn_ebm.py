@@ -886,7 +886,7 @@ def main(args):
             else:
 
                 if args.p_x_weight > 0:  # maximize log p(x)
-                   if args.score_match:
+                    if args.score_match:
                         sm_loss = sliced_score_matching(f, x_p_d, args.n_sm_vectors)
                         L += args.p_x_weight * sm_loss
                         if cur_iter % args.print_every == 0:
