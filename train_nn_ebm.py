@@ -1138,10 +1138,7 @@ if __name__ == "__main__":
                         help="decay learning rate by decay_rate at these epochs")
     parser.add_argument("--decay_rate", type=float, default=.3,
                         help="learning rate decay multiplier")
-    parser.add_argument("--clf_only", action="store_true", help="If set, then only train the classifier")
-    #labels was -1?
-    # parser.add_argument("--labels_per_class", type=int, default=-1,
-    #                     help="number of labeled examples per class, if zero then use all labels")
+    parser.add_argument("--clf_only", action="store_true", help="Note: use p_x_weight 0.0 instead of this for baseline classifier. If set, then only train the classifier")
     parser.add_argument("--labels_per_class", type=int, default=10,
                         help="number of labeled examples per class, if zero then use all labels")
     parser.add_argument("--optimizer", choices=["adam", "sgd"], default="adam")
@@ -1188,9 +1185,7 @@ if __name__ == "__main__":
     parser.add_argument("--plot_cond", action="store_true", help="If set, save class-conditional samples")
     parser.add_argument("--plot_uncond", action="store_true", help="If set, save unconditional samples")
     parser.add_argument("--n_valid", type=int, default=5000)
-    # parser.add_argument("--n_valid", type=int, default=50)
     parser.add_argument("--semi-supervised", type=bool, default=False)
-    # parser.add_argument("--vat", type=bool, default=False)
     parser.add_argument("--vat", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--vat_weight", type=float, default=1.0)
     parser.add_argument("--n_moons_data", type=int, default=1000, help="how many data points in moon dataset")
@@ -1230,10 +1225,6 @@ if __name__ == "__main__":
     parser.add_argument("--use_cnn", action="store_true", help="Use CNN")
     parser.add_argument("--cnn_no_bn", action="store_true", help="No BN on CNN architecture")
     parser.add_argument("--cnn_no_dropout", action="store_true", help="No Dropout on CNN architecture")
-    parser.add_argument("--psgld", action="store_true", help="Use Preconditioned SGLD")
-    parser.add_argument("--psgld_alpha", type=float, default=0.99)
-    parser.add_argument("--psgld_lambda", type=float, default=1e-1)
-    parser.add_argument("--psgld_div_mean", action="store_true")
     parser.add_argument("--optim_sgld", action="store_true", help="Use SGLD Optimizer")
     parser.add_argument("--optim_sgld_momentum", type=float, default=0.0)
     parser.add_argument("--use_cd", action="store_true", help="Use contrastive divergence instead of persistent contrastive divergence (initialize from data instead of saved replay buffer/previous samples")
@@ -1252,10 +1243,6 @@ if __name__ == "__main__":
     parser.add_argument("--log_sigma_high", type=float, default=0.2)
     parser.add_argument("--viz_every", type=int, default=100, help="Iterations between visualization")
     parser.add_argument("--resnet", action="store_true", help="Resnet for PGAN")
-    parser.add_argument("--e_iters", type=int, default=1)
-    parser.add_argument("--g_iters", type=int, default=1)
-    parser.add_argument("--gp", type=float, default=0.)
-    parser.add_argument("--ent_weight", type=float, default=1.)
     parser.add_argument("--l2_energy_reg", type=float, default=0., help="Regularize energy outputs")
     parser.add_argument("--l2_energy_reg_neg", action="store_true", help="Regularize energy outputs on negative samples (x_q) as well")
     parser.add_argument("--dataset_seed", type=int, default=1234, help="for selecting data")
