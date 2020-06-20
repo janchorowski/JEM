@@ -71,6 +71,12 @@ class Swish(nn.Module):
         else:
             return x * t.sigmoid(self.beta[None, :, None, None] * x)
 
+class Sine(nn.Module):
+    def __init__(self):
+        super(Sine, self).__init__()
+
+    def forward(self, x):
+        return t.sin(x)
 
 
 class NeuralNet(nn.Module):
@@ -97,6 +103,8 @@ class NeuralNet(nn.Module):
 
         if args.swish:
             self.layers.append(Swish(hidden_size))
+        elif args.sine:
+            self.layers.append(Sine())
         elif args.softplus:
             self.layers.append(nn.Softplus())
         elif args.leaky_relu:
@@ -116,6 +124,8 @@ class NeuralNet(nn.Module):
                     self.layers.append(nn.BatchNorm1d(num_features=hidden_size, affine=affine))
             if args.swish:
                 self.layers.append(Swish(hidden_size))
+            elif args.sine:
+                self.layers.append(Sine())
             elif args.softplus:
                 self.layers.append(nn.Softplus())
             elif args.leaky_relu:
@@ -1165,6 +1175,7 @@ if __name__ == "__main__":
     parser.add_argument("--score_match", action="store_true", help="Note: so far implemented only for p(x). Use score matching instead of SGLD in training JEM")
     parser.add_argument("--swish", action="store_true", help="Use swish activation on NN instead of ReLU")
     parser.add_argument("--softplus", action="store_true", help="Use softplus activation on NN instead of ReLU")
+    parser.add_argument("--sine", action="store_true", help="Use sine activation on NN instead of ReLU")
     parser.add_argument("--n_sm_vectors", type=int, default=1, help="Number of vectors for projection with score matching")
     parser.add_argument("--no_param_bn", action="store_true", help="No affine transform/learnable BN params")
     parser.add_argument("--first_layer_bn_only", action="store_true")
