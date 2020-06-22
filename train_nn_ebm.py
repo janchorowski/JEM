@@ -92,6 +92,10 @@ class NeuralNet(nn.Module):
             affine = False
 
         layer_in = nn.Linear(input_size * n_channels_in, hidden_size)
+        if args.sine:
+            unif_bound = np.sqrt(6.0 / input_size)
+            first_layer_scalar = 30
+            nn.init.uniform_(layer_in.weight, -unif_bound, unif_bound) * first_layer_scalar
         self.layers.append(layer_in)
         self.ref_x = ref_x
 
@@ -116,7 +120,11 @@ class NeuralNet(nn.Module):
             self.layers.append(nn.Dropout(p=0.5))
 
         for i in range(extra_layers):
-            self.layers.append(nn.Linear(hidden_size, hidden_size))
+            layer = nn.Linear(hidden_size, hidden_size)
+            if args.sine:
+                nn.init.uniform_(layer.weight, -unif_bound, unif_bound)
+            self.layers.append(layer)
+            # self.layers.append(nn.Linear(hidden_size, hidden_size))
             if not args.first_layer_bn_only:
                 if use_vbnorm:
                     self.layers.append(VirtualBatchNormNN(hidden_size))
@@ -280,9 +288,10 @@ class F(nn.Module):
                 use_vbnorm = True
 
             if input_size is None:
-                self.f = NeuralNet(im_sz**2, hidden_units, extra_layers=args.nn_extra_layers, use_vbnorm=use_vbnorm, ref_x=ref_x, n_channels_in=args.n_ch)
-            else:
-                self.f = NeuralNet(input_size, hidden_units, extra_layers=args.nn_extra_layers, use_vbnorm=use_vbnorm, ref_x=ref_x, n_channels_in=args.n_ch)
+                input_size = im_sz**2
+                # self.f = NeuralNet(im_sz**2, hidden_units, extra_layers=args.nn_extra_layers, use_vbnorm=use_vbnorm, ref_x=ref_x, n_channels_in=args.n_ch)
+            # else:
+            self.f = NeuralNet(input_size, hidden_units, extra_layers=args.nn_extra_layers, use_vbnorm=use_vbnorm, ref_x=ref_x, n_channels_in=args.n_ch)
             self.f.last_dim = hidden_units
         else:
             self.f = wideresnet.Wide_ResNet(depth, width, norm=norm, dropout_rate=dropout_rate, input_channels=args.n_ch)
