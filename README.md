@@ -1,4 +1,4 @@
-# JEM (Joint Energy Models) for Semi-Supervised Classification
+# JEM (Joint Energy-Based Models) for Semi-Supervised Classification
 
 Code for the paper Joint Energy-Based Models for Semi-Supervised Classification. 
 
