@@ -7,12 +7,14 @@ This work builds upon [the original JEM work](https://github.com/wgrathwohl/JEM)
 Many thanks to my amazing co-authors: [Jörn-Henrick Jacobsen](https://jhjacobsen.github.io/) and [Will Grathwohl](http://www.cs.toronto.edu/~wgrathwohl/). 
 
 
-## Usage
-### Training
-To train a model on CIFAR10 as in the paper
+## Experiments
+### Toy Datasets
+To train and evaluate JEM on the rings (concentric circles) dataset:
 ```markdown
-python train_wrn_ebm.py --lr .0001 --dataset cifar10 --optimizer adam --p_x_weight 1.0 --p_y_given_x_weight 1.0 --p_x_y_weight 0.0 --sigma .03 --width 10 --depth 28 --save_dir /YOUR/SAVE/DIR --plot_uncond --warmup_iters 1000
+python train_nn_ebm.py --data_seed 20 --labels_per_class 2 --rings_noise 0.03 --l2_energy_reg 0.0002 --l2_energy_reg_neg --n_rings_data 1000 --lr .001 --use_nn --batch_size 20 --dataset rings --n_valid 200 --optimizer adam --p_x_weight 1.0 --p_y_given_x_weight 1.0 --p_x_y_weight 0.0 --sigma .03 --width 10 --depth 28  --plot_uncond --warmup_iters 10 --save_dir . --weight_decay .0005 --sgld_lr .00125 --sgld_std .05 --temper_init 1. --ul_batch_size 100 --viz_every 10
 ```
+Use ```markdown
+--dataset moons``` instead for moons dataset. Use 
 
 ### Evaluation
 
