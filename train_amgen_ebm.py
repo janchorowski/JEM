@@ -15,6 +15,11 @@ import utils
 import toy_data
 TOY_DSETS = ("moons", "circles", "8gaussians", "pinwheel", "2spirals", "checkerboard", "rings", "swissroll")
 
+
+def logit(x, alpha=1e-6):
+    x = x * (1 - 2 * alpha) + alpha
+    return torch.log(x) - torch.log(1 - x)
+
 def main(args):
     utils.makedirs(args.save_dir)
     if args.dataset in TOY_DSETS:
@@ -53,7 +58,7 @@ def main(args):
             nn.LeakyReLU(.2),
             nn.utils.weight_norm(nn.Linear(250, 250)),
             nn.LeakyReLU(.2),
-            nn.Linear(250, 1)
+            nn.Linear(250, 1, bias=False)
         )
         logp_fn = lambda x: logp_net(x)  # - (x * x).flatten(start_dim=1).sum(1)/10
 
@@ -70,8 +75,9 @@ def main(args):
                     nn.Linear(500, args.data_dim),
                     nn.Sigmoid()
                 )
-                # self.logsigma = nn.Parameter(torch.zeros(1, )-5)
-                self.logsigma = nn.Parameter((torch.ones(1,) * (args.sgld_step * 2)**.5).log(), requires_grad=False)
+                # self.logsigma = nn.Parameter((torch.ones(1,) * (args.sgld_step * 2)**.5).log(), requires_grad=False)
+                #self.logsigma = nn.Parameter(torch.zeros(1, ) - 5)
+                self.logsigma = nn.Parameter((torch.ones(1,) * .1).log(), requires_grad=False)
 
 
     g = G()
@@ -114,16 +120,51 @@ def main(args):
             logq_tilde = logq_unnorm(x_k, h_tilde)
             logq = logq_unnorm(x_k, h_k)
             g_x = torch.autograd.grad(logp.sum() + logq.sum() - logq_tilde.sum(), [x_k], retain_graph=True)[0]
-            #g_x = torch.autograd.grad(logp.sum(), [x_k], retain_graph=True)[0]
+
             # x update
             x_k = x_k + g_x * sgld_step + torch.randn_like(x_k) * sgld_sigma
-            x_k = x_k.detach().requires_grad_()
+            x_k = x_k.detach().requires_grad_()#.clamp(0, 1)
 
             # h update
+            logq = logq_unnorm(x_k, h_k)
+            g_h = torch.autograd.grad(logq.sum(), [h_k], retain_graph=True)[0]
             h_k = h_k + g_h * sgld_step + torch.randn_like(h_k) * sgld_sigma
             h_k = h_k.detach().requires_grad_()
 
+        # return x_k.detach().clamp(0, 1), h_k.detach()
         return x_k.detach(), h_k.detach()
+
+    def refine_q_hmc(x_init, h_init, n_steps, sgld_step, beta=.5):
+        x_k = torch.clone(x_init).requires_grad_()
+        h_k = torch.clone(h_init).requires_grad_()
+        v_x = torch.zeros_like(x_k)
+        v_h = torch.zeros_like(h_k)
+        sgld_sigma_tilde = (2 * sgld_step) ** .5
+        sgld_sigma = (2 * beta * sgld_step) ** .5
+        for k in range(n_steps):
+            logp = logp_fn(x_k)[:, 0]
+            logq = logq_unnorm(x_k, h_k)
+            g_h = torch.autograd.grad(logq.sum(), [h_k], retain_graph=True)[0]
+
+            # sample h tilde ~ q(h|x_k)
+            h_tilde = h_k + g_h * sgld_step + torch.randn_like(h_k) * sgld_sigma_tilde
+            h_tilde = h_tilde.detach()
+
+            logq_tilde = logq_unnorm(x_k, h_tilde)
+            logq = logq_unnorm(x_k, h_k)
+            g_x = torch.autograd.grad(logp.sum() + logq.sum() - logq_tilde.sum(), [x_k], retain_graph=True)[0]
+            # x update
+            v_x = (v_x * (1 - beta) + sgld_step * g_x + torch.randn_like(x_k) * sgld_sigma).detach()
+            x_k = (x_k + v_x).detach().requires_grad_().clamp(0, 1)
+
+            # h update
+            logq = logq_unnorm(x_k, h_k)
+            g_h = torch.autograd.grad(logq.sum(), [h_k], retain_graph=True)[0]
+
+            v_h = (v_h * (1 - beta) + sgld_step * g_h + torch.randn_like(h_k) * sgld_sigma).detach()
+            h_k = (h_k + v_h).detach().requires_grad_()
+
+        return x_k.detach().clamp(0, 1), h_k.detach()
 
     g.train()
     g.to(device)
@@ -141,18 +182,24 @@ def main(args):
 
 
             x_init, h_init = sample_q(args.batch_size)
-            x, h = refine_q(x_init, h_init, args.n_steps, args.sgld_step)
+            if args.hmc:
+                x, h = refine_q(x_init, h_init, args.n_steps, args.sgld_step)
+            else:
+                x, h = refine_q_hmc(x_init, h_init, args.n_steps, args.sgld_step)
 
-            logp_obj = (logp_fn(x_d) - logp_fn(x.detach()))[:, 0].mean()
+            ld = logp_fn(x_d)[:, 0]
+            lm = logp_fn(x.detach())[:, 0]
+            li = logp_fn(x_init.detach())[:, 0]
+            logp_obj = (ld - lm).mean()
             logq_obj = logq_unnorm(x.detach(), h.detach()).mean()
 
-            loss = -(3 * logp_obj + logq_obj) + 3 * args.p_control * (logp_fn(x_d) ** 2).mean()
+            loss = -(logp_obj + 3 * logq_obj) + args.p_control * (ld**2).mean()
             loss.backward()
             optimizer.step()
 
             if itr % args.print_every == 0:
-                print("({}) | log p obj = {:.4f}, log q obj = {:.4f}, sigma = {:.4f}".format(
-                    itr, logp_obj.item(), logq_obj.item(), g.logsigma.exp().item()))
+                print("({}) | log p obj = {:.4f}, log q obj = {:.4f}, sigma = {:.4f} | log p(x_d) = {:.4f}, log p(x_m) = {:.4f}, log p(x_i) = {:.4f}".format(
+                    itr, logp_obj.item(), logq_obj.item(), g.logsigma.exp().item(), ld.mean().item(), lm.mean().item(), li.mean().item()))
 
             if itr % args.viz_every == 0:
                 if args.dataset in TOY_DSETS:
@@ -199,7 +246,9 @@ def get_data(args):
         return dload, dload
     elif args.dataset == "mnist":
         tr_dataset = datasets.MNIST("./data",
-                                    transform=transforms.Compose([transforms.ToTensor(), lambda x: x.view(-1)]),
+                                    # transform=transforms.Compose([transforms.ToTensor(), lambda x: x.view(-1)]),
+                                    transform=transforms.Compose([transforms.ToTensor(),
+                                                                  lambda x: (((255. * x) + torch.rand_like(x)) / 256.).view(-1)]),
                                     download=True)
         te_dataset = datasets.MNIST("./data", train=False,
                                     transform=transforms.Compose([transforms.ToTensor(), lambda x: x.view(-1)]),
@@ -251,6 +300,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_valid", type=int, default=5000)
     parser.add_argument("--semi-supervised", type=bool, default=False)
     parser.add_argument("--vat", action="store_true", help="Run VAT instead of JEM")
+    parser.add_argument("--hmc", action="store_true", help="Run VAT instead of JEM")
 
     args = parser.parse_args()
     if args.dataset in TOY_DSETS:
@@ -260,4 +310,3 @@ if __name__ == "__main__":
         args.data_size = (1, 28, 28)
 
     main(args)
-

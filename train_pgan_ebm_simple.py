@@ -10,11 +10,13 @@ import torchvision
 import sklearn.datasets as skdatasets
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 import matplotlib
+import json
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import utils
 import toy_data
 import hmc
+from singular import find_extreme_singular_vectors, log_sigular_values_sum_bound
 TOY_DSETS = ("moons", "circles", "8gaussians", "pinwheel", "2spirals", "checkerboard", "rings", "swissroll")
 
 import torch.nn.init as nninit
@@ -233,7 +235,12 @@ def MALA(vars, logp_fn, step_lr):
 
 def main(args):
     utils.makedirs(args.save_dir)
-
+    cn_sgld_dir = "{}/{}".format(args.save_dir, "condition_number")
+    utils.makedirs(cn_sgld_dir)
+    h_sgld_dir = "{}/{}".format(args.save_dir, "largest_sv")
+    utils.makedirs(h_sgld_dir)
+    l_sgld_dir = "{}/{}".format(args.save_dir, "smallest_sv")
+    utils.makedirs(l_sgld_dir)
     data_sgld_dir = "{}/{}".format(args.save_dir, "data_sgld")
     utils.makedirs(data_sgld_dir)
     gen_sgld_dir = "{}/{}".format(args.save_dir, "generator_sgld")
@@ -249,8 +256,19 @@ def main(args):
     utils.makedirs(z_sgld_chain_dir)
     logp_net, g = get_models(args)
 
-    e_optimizer = torch.optim.Adam(logp_net.parameters(), lr=args.lr, betas=[0., .9], weight_decay=args.weight_decay)
-    g_optimizer = torch.optim.Adam(g.parameters(), lr=args.lr / 1, betas=[0., .9], weight_decay=args.weight_decay)
+    with open("{}/args.txt".format(args.save_dir), 'w') as f:
+        json.dump(args.__dict__, f)
+
+
+    e_optimizer = torch.optim.Adam(logp_net.parameters(), lr=args.lr, betas=[args.beta1, args.beta2], weight_decay=args.weight_decay)
+    g_optimizer = torch.optim.Adam(g.parameters(), lr=args.glr, betas=[args.beta1, args.beta2], weight_decay=args.weight_decay)
+
+    class P(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.logsigma = nn.Parameter(torch.zeros(args.noise_dim,)-2)
+    post_logsigma = P()
+    p_optimizer = torch.optim.Adam(post_logsigma.parameters(), lr=args.lr * 10, betas=[args.beta1, args.beta2])
 
     train_loader, test_loader, plot = get_data(args)
 
@@ -262,16 +280,21 @@ def main(args):
         x = x_mu + torch.randn_like(x_mu) * g.logsigma.exp()
         return x, h
 
-    def logq_joint(x, h):
+    def logq_joint(x, h, return_mu=False):
         logph = distributions.Normal(0, 1).log_prob(h).sum(1)
-        px_given_h = distributions.Normal(g.generator(h), g.logsigma.exp())
+        gmu = g.generator(h)
+        px_given_h = distributions.Normal(gmu, g.logsigma.exp())
         logpx_given_h = px_given_h.log_prob(x).flatten(start_dim=1).sum(1)
-        return logpx_given_h + logph
+        if return_mu:
+            return logpx_given_h + logph, gmu
+        else:
+            return logpx_given_h + logph
 
     g.train()
     g.to(device)
     logp_net.train()
     logp_net.to(device)
+    post_logsigma.to(device)
 
     itr = 0
     stepsize = 1. / args.noise_dim
@@ -300,6 +323,7 @@ def main(args):
                 e_loss.backward()
                 e_optimizer.step()
 
+            x_g, h_g = sample_q(args.batch_size)
             # gen obj
             lg = logp_net(x_g).squeeze()
 
@@ -315,6 +339,41 @@ def main(args):
                     c = ((x_g - mean_output_summed) / g.logsigma.exp() ** 2).detach()
                     g_error_entropy = torch.mul(c, x_g).mean(0).sum()
                     logq_obj = lg.mean() + args.ent_weight * g_error_entropy
+                elif args.sv_bound:
+                    v, t = find_extreme_singular_vectors(g.generator, h_g, args.niters, args.v_norm)
+                    log_sv = log_sigular_values_sum_bound(g.generator, h_g, v, args.v_norm)
+                    logpx = - log_sv.mean() - distributions.Normal(0, g.logsigma.exp()).entropy() * args.data_dim
+                    g_error_entropy = logpx
+                    logq_obj = lg.mean() - args.ent_weight * logpx
+                elif args.pg_inf:
+                    post = distributions.Normal(h_g.detach(), post_logsigma.logsigma.exp())
+                    h_g_post = post.rsample()
+                    joint, mean_output_summed = logq_joint(x_g.detach(), h_g_post, return_mu=True)
+                    post_ent = post.entropy().sum(1)
+                    elbo = joint + post_ent
+                    post_loss = -elbo.mean()
+                    p_optimizer.zero_grad()
+                    post_loss.backward()
+                    p_optimizer.step()
+
+                    c = ((x_g - mean_output_summed) / g.logsigma.exp() ** 2).detach()
+                    g_error_entropy = torch.mul(c, x_g).mean(0).sum()
+                    logq_obj = lg.mean() + args.ent_weight * g_error_entropy
+
+                elif args.ub_inf:
+                    post = distributions.Normal(h_g.detach(), post_logsigma.logsigma.exp())
+                    joint = logq_joint(x_g.detach(), h_g.detach())
+                    post_logp = post.log_prob(h_g.detach()).sum(1)
+                    uelbo = joint - post_logp
+                    post_loss = uelbo.mean()
+                    p_optimizer.zero_grad()
+                    post_loss.backward(retain_graph=True)
+                    p_optimizer.step()
+
+                    #c = ((x_g - mean_output_summed) / g.logsigma.exp() ** 2).detach()
+                    g_error_entropy = uelbo.mean()#torch.mul(c, x_g).mean(0).sum()
+                    logq_obj = lg.mean() - args.ent_weight * uelbo.mean()
+
                 else:
                     num_samples_posterior = 2
                     h_given_x, acceptRate, stepsize = hmc.get_gen_posterior_samples(
@@ -355,11 +414,11 @@ def main(args):
                     g_error_entropy = ((epsJtJeps - args.gp) ** 2).mean()
                     logq_obj = lg.mean() - args.ent_weight * g_error_entropy
 
-
             g_loss = -logq_obj
-            g_optimizer.zero_grad()
-            g_loss.backward()
-            g_optimizer.step()
+            if itr % args.e_iters == 0:
+                g_optimizer.zero_grad()
+                g_loss.backward()
+                g_optimizer.step()
 
             if args.clamp:
                 g.logsigma.data.clamp_(np.log(.01), np.log(.0101))
@@ -373,6 +432,9 @@ def main(args):
                     itr, logp_obj.item(), logq_obj.item(), g.logsigma.exp().item(),
                     ld.mean().item(), lg_detach.mean().item(), g_error_entropy.item(),
                     sgld_lr, sgld_lr_z, sgld_lr_zne, stepsize))
+                if args.pg_inf or args.ub_inf:
+                    print("    log sigma = {}, {}".format(post_logsigma.logsigma.exp().mean().item(),
+                                                          post_logsigma.logsigma.exp().std().item()))
 
             if itr % args.viz_every == 0:
                 if args.dataset in TOY_DSETS:
@@ -388,13 +450,13 @@ def main(args):
 
                     ax = plt.subplot(1, 4, 3, aspect="equal")
                     logp_net.cpu()
-                    utils.plt_flow_density(logp_net, ax, low=x_d.min().item(), high=x_d.max().item())
+                    utils.plt_flow_density(lambda x: logp_net(x), ax, low=x_d.min().item(), high=x_d.max().item())
                     plt.savefig("/{}/{}.png".format(args.save_dir, itr))
                     logp_net.to(device)
 
                     ax = plt.subplot(1, 4, 4, aspect="equal")
                     logp_net.cpu()
-                    utils.plt_flow_density(logp_net, ax, low=x_d.min().item(), high=x_d.max().item(), exp=False)
+                    utils.plt_flow_density(lambda x: logp_net(x), ax, low=x_d.min().item(), high=x_d.max().item(), exp=False)
                     plt.savefig("/{}/{}.png".format(args.save_dir, itr))
                     logp_net.to(device)
 
@@ -424,13 +486,13 @@ def main(args):
                     c, h, l = condition_number(J)
                     plt.clf()
                     plt.hist(c.numpy())
-                    plt.savefig("/{}/cn_{}.png".format(args.save_dir, itr))
+                    plt.savefig("{}/cn_{}.png".format(cn_sgld_dir, itr))
                     plt.clf()
                     plt.hist(h.numpy())
-                    plt.savefig("/{}/large_s_{}.png".format(args.save_dir, itr))
+                    plt.savefig("{}/large_s_{}.png".format(h_sgld_dir, itr))
                     plt.clf()
                     plt.hist(l.numpy())
-                    plt.savefig("/{}/small_s_{}.png".format(args.save_dir, itr))
+                    plt.savefig("{}/small_s_{}.png".format(l_sgld_dir, itr))
                     plt.clf()
 
 
@@ -585,22 +647,23 @@ def get_models(args):
             nn.LeakyReLU(.2, inplace=True),
             nn.utils.weight_norm(nn.Linear(args.h_dim, args.h_dim)),
             nn.LeakyReLU(.2, inplace=True),
-            nn.Linear(args.h_dim, 1, bias=False)
+            nn.utils.weight_norm(nn.Linear(args.h_dim, 1, bias=False))
         )
 
         class G(nn.Module):
             def __init__(self):
                 super().__init__()
                 self.generator = nn.Sequential(
-                    nn.Linear(args.noise_dim, args.h_dim, bias=False),
+                    nn.Linear(args.noise_dim, args.h_dim),#, bias=False),
                     nn.BatchNorm1d(args.h_dim, affine=True),
                     nn.ReLU(inplace=True),
-                    nn.Linear(args.h_dim, args.h_dim, bias=False),
+                    nn.Linear(args.h_dim, args.h_dim),# bias=False),
                     nn.BatchNorm1d(args.h_dim, affine=True),
                     nn.ReLU(inplace=True),
-                    nn.Linear(args.h_dim, args.data_dim, bias=False)
+                    nn.Linear(args.h_dim, args.data_dim, bias=True)
                 )
                 self.logsigma = nn.Parameter((torch.zeros(1, ) + .01).log())
+
     elif args.dataset == "mnist":
         logp_net = nn.Sequential(
             nn.utils.weight_norm(nn.Linear(args.data_dim, 1000)),
@@ -634,44 +697,21 @@ def get_models(args):
                 self.logsigma = nn.Parameter((torch.ones(1, ) * .01).log())
 
     elif args.dataset == "svhn" or args.dataset == "cifar10":
-        # logp_net = nn.Sequential(
-        #     nn.utils.weight_norm(nn.Conv2d(args.data_size[0], 64, 3, 1, 0)),
-        #     nn.LeakyReLU(.2, inplace=True),
-        #     nn.utils.weight_norm(nn.Conv2d(64, 64, 3, 1, 0)),
-        #     nn.LeakyReLU(.2, inplace=True),
-        #     nn.utils.weight_norm(nn.Conv2d(64, 64, 3, 2, 0)),
-        #     nn.LeakyReLU(.2, inplace=True),
-        #     nn.Dropout2d(.5),
-        #     nn.utils.weight_norm(nn.Conv2d(64, 128, 3, 1, 0)),
-        #     nn.LeakyReLU(.2, inplace=True),
-        #     nn.utils.weight_norm(nn.Conv2d(128, 128, 3, 1, 0)),
-        #     nn.LeakyReLU(.2, inplace=True),
-        #     nn.utils.weight_norm(nn.Conv2d(128, 128, 3, 2, 0)),
-        #     nn.LeakyReLU(.2, inplace=True),
-        #     nn.Dropout2d(.5),
-        #     nn.utils.weight_norm(nn.Conv2d(128, 128, 3, 1, 0)),
-        #     nn.LeakyReLU(.2, inplace=True),
-        #     nn.utils.weight_norm(nn.Conv2d(128, 128, 2, 1, 0)),
-        #     nn.LeakyReLU(.2, inplace=True),
-        #     nn.utils.weight_norm(nn.Conv2d(128, 128, 1, 1, 0)),
-        #     nn.LeakyReLU(.2, inplace=True),
-        #     nn.utils.weight_norm(nn.Conv2d(128, 1, 1, 1, 0)),
-        # )
         if not args.resnet:
             logp_net = nn.Sequential(
                 # input is (nc) x 32 x 32
-                nn.utils.weight_norm(nn.Conv2d(3, 64, 4, 2, 1)),
+                nn.Conv2d(3, 64, 4, 2, 1),
                 nn.LeakyReLU(0.2, inplace=True),
                 # state size. (ndf) x 16 x 16
-                nn.utils.weight_norm(nn.Conv2d(64, 128, 4, 2, 1)),
+                nn.Conv2d(64, 128, 4, 2, 1),
                 #nn.BatchNorm2d(ndf * 2),
                 nn.LeakyReLU(0.2, inplace=True),
                 # state size. (ndf*2) x 8 x 8
-                nn.utils.weight_norm(nn.Conv2d(128, 256, 4, 2, 1)),
+                nn.Conv2d(128, 256, 4, 2, 1),
                 #nn.BatchNorm2d(ndf * 4),
                 nn.LeakyReLU(0.2, inplace=True),
                 # state size. (ndf*4) x 4 x 4
-                nn.utils.weight_norm(nn.Conv2d(256, 512, 4, 2, 1)),
+                nn.Conv2d(256, 512, 4, 2, 1),
                 #nn.BatchNorm2d(ndf * 8),
                 nn.LeakyReLU(0.2, inplace=True),
                 # state size. (ndf*8) x 2 x 2
@@ -686,19 +726,6 @@ def get_models(args):
         class Generator(nn.Module):
             def __init__(self):
                 super().__init__()
-                # self.first = nn.Sequential(
-                #     nn.ConvTranspose2d(args.noise_dim, 512, 4, 1, 0, bias=False),
-                #     nn.BatchNorm2d(512),
-                #     nn.ReLU(inplace=True),
-                #     nn.ConvTranspose2d(512, 256, 5, 2, 2, 1, bias=False),
-                #     nn.BatchNorm2d(256),
-                #     nn.ReLU(inplace=True),
-                #     nn.ConvTranspose2d(256, 128, 5, 2, 2, 1, bias=False),
-                #     nn.BatchNorm2d(128),
-                #     nn.ReLU(inplace=True),
-                #     nn.ConvTranspose2d(128, 3, 5, 2, 2, 1),
-                #     nn.Tanh()
-                # )
                 ngf = 64
                 self.first = nn.Sequential(
                     # input is Z, going into a convolution
@@ -743,10 +770,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser("Energy Based Models and Shit")
     #cifar
     parser.add_argument("--dataset", type=str, default="circles")#, choices=["mnist", "moons", "circles"])
-    parser.add_argument("--mode", type=str, default="reverse_kl")
     parser.add_argument("--data_root", type=str, default="../data")
     # optimization
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--glr", type=float, default=1e-3)
+    parser.add_argument("--beta1", type=float, default=0.0)
+    parser.add_argument("--beta2", type=float, default=.9)
+    parser.add_argument("--v_norm", type=float, default=.01)
     parser.add_argument("--decay_epochs", nargs="+", type=int, default=[160, 180],
                         help="decay learning rate by decay_rate at these epochs")
     parser.add_argument("--decay_rate", type=float, default=.3,
@@ -761,6 +791,7 @@ if __name__ == "__main__":
     parser.add_argument("--noise_dim", type=int, default=2)
     parser.add_argument("--e_iters", type=int, default=1)
     parser.add_argument("--g_iters", type=int, default=1)
+    parser.add_argument("--niters", type=int, default=10)
     # loss weighting
     parser.add_argument("--ent_weight", type=float, default=1.)
     parser.add_argument("--gp", type=float, default=0.)
@@ -790,6 +821,9 @@ if __name__ == "__main__":
     parser.add_argument("--my_single_sample", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--adji_single_sample", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--clamp", action="store_true", help="Run VAT instead of JEM")
+    parser.add_argument("--sv_bound", action="store_true", help="Run VAT instead of JEM")
+    parser.add_argument("--pg_inf", action="store_true", help="Run VAT instead of JEM")
+    parser.add_argument("--ub_inf", action="store_true", help="Run VAT instead of JEM")
 
     args = parser.parse_args()
     if args.dataset in TOY_DSETS:
