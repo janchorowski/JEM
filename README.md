@@ -1,8 +1,8 @@
-# JEM - Joint Energy Models
+# JEM (Joint Energy Models) for Semi-Supervised Classification
 
-Official code for the paper [Your Classifier is Secretly an Energy Based Model and You Should Treat it Like One](https://arxiv.org/abs/1912.03263).
+Code for the paper Joint Energy-Based Models for Semi-Supervised Classification. 
 
-![JEM](figs/JEM.png)
+This work builds upon [the original JEM work](https://github.com/wgrathwohl/JEM).
 
 Includes scripts for training JEM (Joint-Energy Model), evaluating models at various tasks, and running adversarial attacks.
 
