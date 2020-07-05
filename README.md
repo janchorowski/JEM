@@ -1,16 +1,10 @@
 # JEM (Joint Energy-Based Models) for Semi-Supervised Classification
 
-Code for the paper Joint Energy-Based Models for Semi-Supervised Classification. 
+Code for the paper "Joint Energy-Based Models for Semi-Supervised Classification". 
 
 This work builds upon [the original JEM work](https://github.com/wgrathwohl/JEM).
 
-Includes scripts for training JEM (Joint-Energy Model), evaluating models at various tasks, and running adversarial attacks.
-
-A pretrained model on CIFAR10 can be found [here](http://www.cs.toronto.edu/~wgrathwohl/CIFAR10_MODEL.pt).
-
-For more info on me and my work please checkout my [website](http://www.cs.toronto.edu/~wgrathwohl/), [twitter](https://twitter.com/wgrathwohl), or [Google Scholar](https://scholar.google.ca/citations?user=ZbClz98AAAAJ&hl=en). 
-
-Many thanks to my amazing co-authors: [Jackson (Kuan-Chieh) Wang](https://twitter.com/kcjacksonwang), [Jörn-Henrick Jacobsen](https://jhjacobsen.github.io/), [David Duvenaud](http://www.cs.toronto.edu/~duvenaud/), [Mohammad Norouzi](https://norouzi.github.io/), and [Kevin Swersky](https://ai.google/research/people/105739). 
+Many thanks to my amazing co-authors: [Jörn-Henrick Jacobsen](https://jhjacobsen.github.io/) and [Will Grathwohl](http://www.cs.toronto.edu/~wgrathwohl/). 
 
 
 ## Usage
