@@ -16,7 +16,11 @@ To train and evaluate JEM on the rings (concentric circles) dataset:
 ```markdown
 python train_nn_ebm.py --labels_per_class 2 --rings_noise 0.03 --l2_energy_reg 0.0002 --l2_energy_reg_neg --n_rings_data 1000 --lr .001 --use_nn --batch_size 20 --dataset rings --n_valid 200 --optimizer adam --p_x_weight 1.0 --p_y_given_x_weight 1.0 --p_x_y_weight 0.0 --sigma .03 --data_seed 20 --plot_uncond --warmup_iters 10 --weight_decay .0005 --sgld_lr .00125 --sgld_std .05 --temper_init 1. --ul_batch_size 100 --viz_every 10
 ```
-Use ```--dataset moons``` instead for moons dataset. 
+Use ```--dataset moons``` instead for moons dataset:
+
+```markdown
+python train_nn_ebm.py --labels_per_class 2 --moons_noise 0.1 --l2_energy_reg 0.001 --l2_energy_reg_neg --n_moons_data 1000 --lr .001 --use_nn --batch_size 20 --dataset moons --n_valid 200 --optimizer adam --p_x_weight 1.0 --p_y_given_x_weight 1.0 --p_x_y_weight 0.0 --sigma .03 --data_seed 20 --plot_uncond --warmup_iters 10 --save_dir . --weight_decay .0005 --sgld_lr .00125 --sgld_std .05 --temper_init 1. --ul_batch_size 100 --viz_every 10
+```
 
 ### MNIST
 
