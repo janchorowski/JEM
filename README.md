@@ -9,7 +9,7 @@ Many thanks to my amazing co-authors: [Jörn-Henrick Jacobsen](https://jhjacobse
 
 ## Example Commands for Running Experiments
 
-Below commands are for running JEM. Use ```--vat``` flag to run VAT. Set ```--p_x_weight 0.0``` instead to run just the baseline classifier (with ```--dropout --batch_norm``` for regularization).
+Below commands are for running JEM. Use ```--vat``` flag to run VAT, and optionally change ```--vat_eps 3.0```. Set ```--p_x_weight 0.0``` instead to run just the baseline classifier (with ```--dropout --batch_norm``` for regularization).
 
 ### Toy Datasets
 To train and evaluate JEM on the rings (concentric circles) dataset:
