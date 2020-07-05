@@ -4,7 +4,7 @@ Code for the paper "Joint Energy-Based Models for Semi-Supervised Classification
 
 This work builds upon [the original JEM work](https://github.com/wgrathwohl/JEM).
 
-Many thanks to my amazing co-authors: [Jörn-Henrick Jacobsen](https://jhjacobsen.github.io/) and [Will Grathwohl](http://www.cs.toronto.edu/~wgrathwohl/). 
+Many thanks to my amazing co-authors and mentors: [Jörn-Henrick Jacobsen](https://jhjacobsen.github.io/) and [Will Grathwohl](http://www.cs.toronto.edu/~wgrathwohl/). 
 
 
 ## Example Commands for Running Experiments
