@@ -64,7 +64,7 @@ class Swish(nn.Module):
         if dim > 0:
             self.beta = nn.Parameter(t.ones((dim,)))
         else:
-            self.beta = t.ones((1,))
+            self.beta = nn.Parameter(t.ones((1,)))
     def forward(self, x):
         if len(x.size()) == 2:
             return x * t.sigmoid(self.beta[None, :] * x)
@@ -271,13 +271,21 @@ class ConvLarge(nn.Module):
 
 
 class SmallConvNet(nn.Module):
-    def __init__(self, sm_dim, spectral_norm=False):
+    def __init__(self, sm_dim, spectral_norm=False, swish=False):
         super(SmallConvNet, self).__init__()
         C1S, C2S, F1S = 20, 50, sm_dim
         if spectral_norm:
+            print("Using spec norm")
             N = nn.utils.spectral_norm
         else:
+            print("No spec norm")
             N = lambda x: x
+        
+        if swish:
+            A = Swish
+        else:
+            A = nn.ReLU
+        self.act = A()
         self.conv1 = N(nn.Conv2d(3, C1S, 5, 1))
         self.conv2 = N(nn.Conv2d(C1S, C2S, 5, 1))
         last_dim = 5*5*C2S
@@ -285,7 +293,7 @@ class SmallConvNet(nn.Module):
         while last_dim // 4 > sm_dim:
             new_dim = last_dim //4
             layers.append(N(nn.Linear(last_dim, new_dim)))
-            layers.append(nn.ReLU())
+            layers.append(A())
             last_dim = new_dim
         layers.append(N(nn.Linear(last_dim, sm_dim)))
         self.fc1 = nn.Sequential(*layers)
@@ -294,9 +302,9 @@ class SmallConvNet(nn.Module):
     def forward(self, x):
         if len(x.shape) == 3:
             x = x[:, None, :, :]
-        x = tnnF.relu(self.conv1(x))
+        x = self.act(self.conv1(x))
         x = tnnF.max_pool2d(x, 2, 2)
-        x = tnnF.relu(self.conv2(x))
+        x = self.act(self.conv2(x))
         x = tnnF.max_pool2d(x, 2, 2)
         x = x.view(-1, 5*5*50)
         x = self.fc1(x)
@@ -312,7 +320,7 @@ class F(nn.Module):
         if use_cnn:
             # print("Using ConvLarge")
             # self.f = ConvLarge(avg_pool_kernel=args.cnn_avg_pool_kernel)
-            self.f = SmallConvNet(args.sm_dim)
+            self.f = SmallConvNet(args.sm_dim, spectral_norm=args.spectral_norm, swish=args.swish)
             self.f.last_dim = args.sm_dim
         elif use_nn:
             hidden_units = args.nn_hidden_size
