@@ -700,10 +700,12 @@ def get_sample_q(args, device):
             else:
                 # import pdb; pdb.set_trace()
                 if args.sgld_rmsp > 0:
-                    fp_std = t.max(t.std(f_prime.view(f_prime.shape[0], -1), 1),
-                                   t.tensor(args.sgld_rmsp, device=f_prime.device)) / args.sgld_rmsp
+                    fp_std = t.std(f_prime.view(f_prime.shape[0], -1), 1)
                     fp_std = fp_std.view([-1] + [1] * (f_prime.dim()-1))
-                    x_k.data += args.sgld_lr * f_prime / fp_std
+                    f_prime_norm = t.max(
+                        t.tensor(1.0, device=f_prime.device, dtype=t.float),
+                        fp_std / args.sgld_rmsp)
+                    x_k.data += args.sgld_lr * f_prime / f_prime_norm
                 else:
                     x_k.data += args.sgld_lr * f_prime
                 x_k.data += args.sgld_std * t.randn_like(x_k)
