@@ -18,6 +18,7 @@ mkdir -p ${SAVE_DIR}/code
 rsync --exclude '.*' \
       --exclude data \
       --exclude pretrained_models \
+      --exclude '*data*' \
       --exclude '*runs*' \
       --exclude '*experiment*' \
       --exclude '*.pyc' \

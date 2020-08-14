@@ -38,6 +38,7 @@ from losses import VATLoss, LDSLoss, sliced_score_matching_vr, \
 import regression_datasets
 from matplotlib.colors import ListedColormap
 
+from tblogger import Logger
 
 import toy_data
 TOY_DSETS = ("moons", "circles", "8gaussians", "pinwheel", "2spirals", "checkerboard", "rings", "swissroll")
@@ -827,6 +828,10 @@ def main(args):
     if args.print_to_log:
         sys.stdout = open(f'{args.save_dir}/log.txt', 'w')
 
+    train_logger = Logger(0, os.path.join(args.save_dir, 'train'),
+                              interval=1, dummies=True)
+    valid_logger = Logger(0, os.path.join(args.save_dir, 'valid'))
+
     t.manual_seed(args.t_seed)
     if t.cuda.is_available():
         t.cuda.manual_seed_all(args.t_seed)
@@ -957,6 +962,8 @@ def main(args):
 
                 if cur_iter % args.print_every == 0:
                     acc = (logits.max(1)[1] == y_lab).float().mean()
+                    meta = {'loss': loss, 'acc': acc}
+                    train_logger.log_meta(epoch, cur_iter, 'P(y|x)', meta)
                     print(
                         'P(y|x) {}:{:>d} loss={:>14.9f}, acc={:>14.9f}'.format(
                             epoch,
@@ -976,8 +983,11 @@ def main(args):
                         sm_loss = sliced_score_matching(f, x_p_d, args.n_sm_vectors)
                         L += args.p_x_weight * sm_loss
                         if cur_iter % args.print_every == 0:
+                            train_logger.log_meta(epoch, cur_iter, 'sm_loss', {'': sm_loss})
                             print('sm_loss {}:{:>d} = {:>14.9f}'.format(
                                     epoch, i, sm_loss))
+
+
                     elif args.denoising_score_match:
                         # Multiply by args.denoising_sm_sigma**2 to keep scale of loss
                         # constant across sigma changes
@@ -986,9 +996,11 @@ def main(args):
                         sm_loss = args.denoising_sm_sigma**2 * denoising_score_matching(f, x_p_d,
                                                         args.denoising_sm_sigma)
                         L += args.p_x_weight * sm_loss
+
                         if cur_iter % args.print_every == 0:
                             print('sm_loss {}:{:>d} = {:>14.9f}'.format(
                                 epoch, i, sm_loss))
+                            train_logger.log_meta(epoch, cur_iter, 'sm_loss', {'': sm_loss})
 
                     else:
                         # else:
@@ -1009,6 +1021,8 @@ def main(args):
 
                         l_p_x = -(fp - fq)
                         if cur_iter % args.print_every == 0:
+                            meta = {'f(x_p_d)': fp, 'f(x_q)': fq, 'fp-fq': fp-fq}
+                            train_logger.log_meta(epoch, cur_iter, 'P(x)', meta)
                             print('P(x) | {}:{:>d} f(x_p_d)={:>14.9f} f(x_q)={:>14.9f} d={:>14.9f}'.format(epoch, i, fp, fq,
                                                                                                            fp - fq))
                         L += args.p_x_weight * l_p_x
@@ -1029,6 +1043,8 @@ def main(args):
 
                     if cur_iter % args.print_every == 0:
                         acc = (logits.max(1)[1] == y_lab).float().mean()
+                        meta = {'loss': l_p_y_given_x, 'acc': acc}
+                        train_logger.log_meta(epoch, cur_iter, 'P(y|x)', meta)
                         print('P(y|x) {}:{:>d} loss={:>14.9f}, acc={:>14.9f}'.format(epoch,
                                                                                      cur_iter,
                                                                                      l_p_y_given_x.item(),
@@ -1054,6 +1070,8 @@ def main(args):
                     fp, fq = f(x_lab, y_lab).mean(), f(x_q_lab, y_lab).mean()
                     l_p_x_y = -(fp - fq)
                     if cur_iter % args.print_every == 0:
+                        meta = {'f(x_p_d)': fp, 'f(x_q)': fq, 'fp-fq': fp-fq}
+                        train_logger.log_meta(epoch, cur_iter, 'P(x, y)', meta)
                         print('P(x, y) | {}:{:>d} f(x_p_d)={:>14.9f} f(x_q)={:>14.9f} d={:>14.9f}'.format(epoch, i, fp, fq,
                                                                                                           fp - fq))
 
@@ -1084,6 +1102,8 @@ def main(args):
                 gn = nn.utils.clip_grad_norm_(params, args.grad_clip)
                 # import pdb; pdb.set_trace()
                 if cur_iter % min(10, args.print_every) == 0:
+                    meta = {'L': L, 'gn': gn, 'l_p_x': l_p_x}
+                    train_logger.log_meta(epoch, cur_iter, 'L', meta)
                     print (f'L: {L.item()}, gn: {gn}, l_p_x: {l_p_x.item()}')
 
                 optim.step()    
@@ -1126,6 +1146,8 @@ def main(args):
                 best_valid_found = False
                 correct, loss = eval_classification(f, dload_valid, device)
                 print("Epoch {}: Valid Loss {}, Valid Acc {}".format(epoch, loss, correct))
+                meta = {'loss': loss, 'acc': correct}
+                valid_logger.log_meta(epoch, cur_iter, 'valid', meta)
                 if correct >= best_valid_acc:
                     best_valid_acc = correct
                     print("Best Valid!: {}".format(correct))
@@ -1176,7 +1198,7 @@ if __name__ == "__main__":
                                                                          "cifar100", "moons", "rings",
                                                                          "concrete", "protein", "navy",
                                                                          "power_plant", "year"])
-    parser.add_argument("--data_root", type=str, default="../data")
+    parser.add_argument("--data_root", type=str, default="data")
     # optimization
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--decay_epochs", nargs="+", type=int, default=[160, 180],
