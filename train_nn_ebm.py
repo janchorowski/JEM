@@ -270,6 +270,39 @@ class ConvLarge(nn.Module):
         return out
 
 
+class SmallConvNet(nn.Module):
+    def __init__(self, sm_dim, spectral_norm=False):
+        super(SmallConvNet, self).__init__()
+        C1S, C2S, F1S = 20, 50, sm_dim
+        if spectral_norm:
+            N = nn.utils.spectral_norm
+        else:
+            N = lambda x: x
+        self.conv1 = N(nn.Conv2d(3, C1S, 5, 1))
+        self.conv2 = N(nn.Conv2d(C1S, C2S, 5, 1))
+        last_dim = 5*5*C2S
+        layers = []
+        while last_dim // 4 > sm_dim:
+            new_dim = last_dim //4
+            layers.append(N(nn.Linear(last_dim, new_dim)))
+            layers.append(nn.ReLU())
+            last_dim = new_dim
+        layers.append(N(nn.Linear(last_dim, sm_dim)))
+        self.fc1 = nn.Sequential(*layers)
+        
+
+    def forward(self, x):
+        if len(x.shape) == 3:
+            x = x[:, None, :, :]
+        x = tnnF.relu(self.conv1(x))
+        x = tnnF.max_pool2d(x, 2, 2)
+        x = tnnF.relu(self.conv2(x))
+        x = tnnF.max_pool2d(x, 2, 2)
+        x = x.view(-1, 5*5*50)
+        x = self.fc1(x)
+        return x
+
+
 class F(nn.Module):
     def __init__(self, depth=28, width=2, norm=None, dropout_rate=0.0, im_sz=32, use_nn=False, input_size=None, n_classes=10, ref_x=None, use_cnn=False):
         if input_size is not None:
@@ -277,9 +310,10 @@ class F(nn.Module):
         super(F, self).__init__()
         # print(input_size)
         if use_cnn:
-            print("Using ConvLarge")
-            self.f = ConvLarge(avg_pool_kernel=args.cnn_avg_pool_kernel)
-            self.f.last_dim = 128
+            # print("Using ConvLarge")
+            # self.f = ConvLarge(avg_pool_kernel=args.cnn_avg_pool_kernel)
+            self.f = SmallConvNet(args.sm_dim)
+            self.f.last_dim = args.sm_dim
         elif use_nn:
             hidden_units = args.nn_hidden_size
 
@@ -641,15 +675,35 @@ def get_sample_q(args, device):
         # sgld
         if momentum_buffer is not None:
             momentum = momentum_buffer[buffer_inds].to(device)
+        fp_sum2 = 0
+        fp_sum = 0
+        fp_count = 0
         for k in range(n_steps):
             f_prime = t.autograd.grad(f(x_k, y=y).sum(), [x_k], retain_graph=True)[0]
+
+            fp_sum2 += (f_prime**2).sum().item()
+            fp_sum += f_prime.sum().item()
+            fp_count += np.prod(f_prime.shape)
+
             if momentum_buffer is not None:
                 # Modification to usual momentum to "conserve energy" which should help for sampling
                 momentum = (args.sgld_momentum * momentum + (1-args.sgld_momentum) * f_prime)
                 x_k.data += args.sgld_lr * momentum
             else:
-                x_k.data += args.sgld_lr * f_prime
+                # import pdb; pdb.set_trace()
+                if args.sgld_rmsp > 0:
+                    fp_std = t.max(t.std(f_prime.view(f_prime.shape[0], -1), 1),
+                                   t.tensor(args.sgld_rmsp, device=f_prime.device)) / args.sgld_rmsp
+                    fp_std = fp_std.view([-1] + [1] * (f_prime.dim()-1))
+                    x_k.data += args.sgld_lr * f_prime / fp_std
+                else:
+                    x_k.data += args.sgld_lr * f_prime
                 x_k.data += args.sgld_std * t.randn_like(x_k)
+
+                if args.sgld_clamp:
+                    x_k.data = t.clamp(x_k.data, -args.sgld_clamp, args.sgld_clamp)
+        f_prime_std = np.sqrt(fp_sum2 / fp_count - (fp_sum / fp_count) ** 2)
+        print(f'f_prime_std: {f_prime_std}')
 
         f.train()
         if args.optim_sgld:
@@ -754,6 +808,8 @@ def visualize_decision_boundary(net, Xf, Xfl, device, fname="data.png"):
 
 
 def main(args):
+#     import pydevd_pycharm
+#     pydevd_pycharm.settrace('cymes.stud.ii', port=7321, stdoutToServer=True, stderrToServer=True)
 
     utils.makedirs(args.save_dir)
     with open(f'{args.save_dir}/params.txt', 'w') as f:
@@ -781,6 +837,7 @@ def main(args):
     # datasets
     dload_train, dload_train_labeled, dload_valid, dload_test, dset_train, \
     dset_train_labeled, dload_train_labeled_static, dload_train_vbnorm = get_data(args)
+    print('Train labeled indexes', dset_train_labeled.inds[:10])
 
     device = t.device('cuda' if t.cuda.is_available() else 'cpu')
 
@@ -903,7 +960,7 @@ def main(args):
                                            use_penult=True)
 
             else:
-
+                l_p_x = t.tensor(0.0)
                 if args.p_x_weight > 0:  # maximize log p(x)
                     if args.score_match:
                         sm_loss = sliced_score_matching(f, x_p_d, args.n_sm_vectors)
@@ -1011,8 +1068,16 @@ def main(args):
 
                 optim.zero_grad()
                 L.backward()
-                optim.step()
+                
+                assert len(optim.param_groups) == 1
+                params = optim.param_groups[0]['params']
+                gn = nn.utils.clip_grad_norm_(params, args.grad_clip)
+                # import pdb; pdb.set_trace()
+                if cur_iter % min(10, args.print_every) == 0:
+                    print (f'L: {L.item()}, gn: {gn}, l_p_x: {l_p_x.item()}')
 
+                optim.step()    
+                
                 if args.eval_mode_except_clf:
                     f.eval()
 
@@ -1155,7 +1220,7 @@ if __name__ == "__main__":
     parser.add_argument("--plot_cond", action="store_true", help="If set, save class-conditional samples")
     parser.add_argument("--plot_uncond", action="store_true", help="If set, save unconditional samples")
     parser.add_argument("--n_valid", type=int, default=5000)
-    parser.add_argument("--semi-supervised", type=bool, default=False)
+    # parser.add_argument("--semi-supervised", type=bool, default=False)
     parser.add_argument("--vat", action="store_true", help="Run VAT instead of JEM")
     parser.add_argument("--vat_weight", type=float, default=1.0)
     parser.add_argument("--n_moons_data", type=int, default=1000, help="how many data points in moon dataset")
@@ -1219,6 +1284,11 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_seed", type=int, default=1234, help="for selecting data")
     parser.add_argument("--t_seed", type=int, default=1, help="for Torch")
     parser.add_argument("--temper_init", type=float, default=1.0, help="Reduces the range of the initial uniform dist, may allow for more stable sampling")
+    parser.add_argument("--sm_dim", type=int, default=128, help="Dimension of the SoftMax layer")
+    parser.add_argument("--grad_clip", type=float, default=1e10, help="gradient clipping")
+    parser.add_argument("--sgld_clamp", type=float, default=0.0, help="clamp SGLD samples")
+    parser.add_argument("--sgld_rmsp",  type=float, default=0.0, help="normalize SGLD gradients")
+    parser.add_argument("--spectral_norm", action="store_true", default=False, help="apply spectral-norm to model.")
 
 
     args = parser.parse_args()
@@ -1226,7 +1296,7 @@ if __name__ == "__main__":
         args.n_classes = 100
     elif (args.dataset == "moons" or args.dataset == "rings"):
         args.n_classes = 2
-    elif args.dataset in REG_DSETS or args.dataset == "mnist" or args.dataset == "svhn":
+    elif args.dataset in REG_DSETS or args.dataset == "mnist" or args.dataset == "svhn" or args.dataset == "cifar10":
         args.n_classes = 10
     if args.vat:
         print("Running VAT")
