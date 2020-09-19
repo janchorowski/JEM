@@ -441,8 +441,11 @@ def get_model_and_buffer(args, device, ref_x=None):
     if args.dataset in REG_DSETS:
         args.input_size = REG_DSETS[args.dataset]
         assert args.use_nn
+
+    n_classes = args.n_classes + 1 if args.sewer_p_y_given_x_weight > 0.0 else args.n_classes
+
     f = model_cls(args.depth, args.width, args.norm, dropout_rate=args.dropout_rate,
-                  n_classes=args.n_classes, im_sz=args.im_sz, input_size=args.input_size,
+                  n_classes=n_classes, im_sz=args.im_sz, input_size=args.input_size,
                   use_nn=args.use_nn, ref_x=ref_x, use_cnn=args.use_cnn)
     if not args.uncond:
         assert args.buffer_size % args.n_classes == 0, "Buffer size must be divisible by args.n_classes"
@@ -978,6 +981,33 @@ def main(args):
 
             else:
                 l_p_x = t.tensor(0.0)
+
+                if args.sewer_p_y_given_x_weight > 0:
+
+                    # sample from log-sumexp
+                    x_q = sample_q(f, replay_buffer, optim_sgld=optim_sgld,
+                                   seed_batch=seed_batch,
+                                   momentum_buffer=momentum_buffer, data=x_p_d)
+
+                    logits = f.classify(x_q)
+                    # TODO Set a proper y_lab (SEWER class)
+                    sewer_lab = t.zeros(x_q.size(0), dtype=t.long, device=x_q.device).fill_(args.n_classes)
+                    sewer_l_p_y_given_x = nn.CrossEntropyLoss()(logits, sewer_lab)
+
+                    if cur_iter % args.print_every == 0:
+                        acc = (logits.max(1)[1] == sewer_lab).float().mean()
+                        meta = {'loss': sewer_l_p_y_given_x, 'acc': acc}
+                        train_logger.log_meta(epoch, cur_iter, 'SEWER P(y|x)', meta)
+                        print('SEWER P(y|x) {}:{:>d} loss={:>14.9f}, acc={:>14.9f}'.format(epoch,
+                                                                                     cur_iter,
+                                                                                     sewer_l_p_y_given_x.item(),
+                                                                                     acc.item()))
+                    L += args.sewer_p_y_given_x_weight * sewer_l_p_y_given_x
+
+
+                #
+                #  log p(x)
+                #
                 if args.p_x_weight > 0:  # maximize log p(x)
                     if args.score_match:
                         sm_loss = sliced_score_matching(f, x_p_d, args.n_sm_vectors)
@@ -1033,6 +1063,9 @@ def main(args):
                             if args.l2_energy_reg_neg:
                                 L += args.l2_energy_reg * (fq_all ** 2).sum()
 
+                #
+                #  END: log p(x)
+                #
 
                 if args.p_y_given_x_weight > 0:  # maximize log p(y | x)
                     if args.eval_mode_except_clf:
@@ -1096,7 +1129,7 @@ def main(args):
 
                 optim.zero_grad()
                 L.backward()
-                
+
                 assert len(optim.param_groups) == 1
                 params = optim.param_groups[0]['params']
                 gn = nn.utils.clip_grad_norm_(params, args.grad_clip)
@@ -1219,6 +1252,7 @@ if __name__ == "__main__":
     parser.add_argument("--p_y_given_x_weight", type=float, default=1.)
     parser.add_argument("--label_prop_weight", type=float, default=1.)
     parser.add_argument("--p_x_y_weight", type=float, default=0.)
+    parser.add_argument("--sewer_p_y_given_x_weight", type=float, default=0.)
     # regularization
     parser.add_argument("--dropout_rate", type=float, default=0.0)
     parser.add_argument("--sigma", type=float, default=3e-2,
